@@ -60,7 +60,6 @@ body {
 .hidden { display: none !important; }
 
 button {
-  font-family: var(--font-mono);
   cursor: pointer;
 }
 
@@ -125,7 +124,19 @@ button {
   margin-bottom: 28px;
 }
 
+.mode-select.set-select {
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 10px;
+}
+
+.mode-btn.small {
+  padding: 12px 8px;
+}
+
+.mode-btn.small .mode-title { font-size: 12px; letter-spacing: 1px; }
+
 .mode-btn {
+  font-family: var(--font-display);
   background: var(--bg-panel-raised);
   border: 1px solid var(--line-hair);
   border-radius: var(--radius);
@@ -160,6 +171,7 @@ button {
 }
 
 .start-btn {
+  font-family: var(--font-display);
   width: 100%;
   padding: 16px;
   border: 1px solid var(--phosphor-dim);
@@ -209,6 +221,14 @@ button {
   font-size: 13px;
 }
 
+.topbar-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--phosphor);
+  font-size: 14px;
+}
+
 .icon-btn {
   background: transparent;
   border: 1px solid var(--line-hair);
@@ -223,6 +243,14 @@ button {
 .icon-btn:hover {
   color: var(--text-hi);
   border-color: var(--text-dim);
+}
+
+.codex-btn-full {
+  width: 100%;
+  margin-top: 10px;
+  padding: 16px;
+  font-size: 14px;
+  letter-spacing: 0.5px;
 }
 
 .game-body {
@@ -295,13 +323,14 @@ button {
   width: 52px;
   height: 68px;
   border-radius: 5px;
+  cursor: pointer;
   border: 1.5px solid var(--line-hair);
   background: var(--bg-card-back);
   display: flex;
   align-items: center;
   justify-content: center;
   position: relative;
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   font-size: 9px;
   color: var(--text-dim);
   letter-spacing: 0.5px;
@@ -309,6 +338,7 @@ button {
 }
 
 .deck-box .count-badge, .discard-box .count-badge {
+  font-family: var(--font-mono);
   position: absolute;
   top: -8px;
   right: -8px;
@@ -650,7 +680,7 @@ button {
   min-height: 80px;
   overflow-y: auto;
   padding: 10px 14px;
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   font-size: 11px;
   color: var(--text-mid);
   display: flex;
@@ -867,6 +897,411 @@ button {
 .card-zoom .ci-name { font-size: 15px; }
 .card-zoom .ci-value { font-size: 22px; }
 .card-zoom .ci-band { font-size: 13px; }
+
+/* ==========================================================================
+   밴픽 화면
+   ========================================================================== */
+.draft-header {
+  text-align: center;
+  padding: 24px 20px 12px;
+}
+
+.draft-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 3px;
+  color: var(--phosphor);
+  text-shadow: 0 0 20px var(--phosphor-glow);
+  margin: 0 0 14px;
+}
+
+.draft-steps {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.draft-step {
+  width: 34px;
+  height: 30px;
+  border-radius: 5px;
+  border: 1.5px solid var(--line-hair);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: var(--bg-panel);
+}
+
+.draft-step.pick { color: var(--text-mid); }
+.draft-step.ban { color: var(--text-mid); }
+.draft-step.current {
+  border-color: var(--phosphor);
+  box-shadow: 0 0 12px var(--phosphor-glow);
+  color: var(--phosphor);
+}
+.draft-step.current.ban { border-color: var(--danger); color: var(--danger);
+  box-shadow: 0 0 12px rgba(255,92,114,0.5); }
+.draft-step.filled { opacity: 0.4; }
+
+.draft-subtitle {
+  font-size: 13px;
+  color: var(--text-mid);
+  letter-spacing: 0.3px;
+}
+
+.draft-subtitle .who { color: var(--phosphor); font-weight: 700; }
+.draft-subtitle .act-ban { color: var(--danger); font-weight: 700; }
+.draft-subtitle .act-pick { color: var(--phosphor); font-weight: 700; }
+
+.draft-body {
+  display: flex;
+  height: calc(100vh - 150px);
+  padding: 0 20px 20px;
+  gap: 16px;
+}
+
+.draft-side {
+  flex: 0 0 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.draft-side-title {
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 1px;
+  color: var(--text-mid);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line-hair);
+}
+
+.draft-side.is-turn .draft-side-title { color: var(--phosphor); }
+
+.draft-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.draft-pick-chip {
+  padding: 10px 12px;
+  border-radius: 5px;
+  border: 1.5px solid var(--pick-accent, var(--line-hair));
+  background: var(--bg-panel-raised);
+  color: var(--pick-accent, var(--text-hi));
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.draft-pick-chip.empty {
+  border-style: dashed;
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.draft-pool-wrap {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.draft-pool {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+/* "로딩 카드" -- 실물 프로토콜 카드 뒷면(태그라인 / 이름 / 키워드) 재현 */
+.draft-card {
+  position: relative;
+  aspect-ratio: 3 / 2.2;
+  border-radius: 8px;
+  border: 1.5px solid var(--card-accent, var(--line-hair));
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--card-accent) 30%, transparent) 0%, transparent 60%),
+    repeating-linear-gradient(135deg, color-mix(in srgb, var(--card-accent) 10%, #0d1016) 0px,
+      color-mix(in srgb, var(--card-accent) 10%, #0d1016) 10px,
+      color-mix(in srgb, var(--card-accent) 16%, #0d1016) 10px,
+      color-mix(in srgb, var(--card-accent) 16%, #0d1016) 20px),
+    var(--bg-card-back);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform .12s, box-shadow .12s;
+}
+
+.draft-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 22px rgba(0,0,0,0.5), 0 0 16px var(--phosphor-glow);
+}
+
+.draft-card .dc-tagline {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--text-hi);
+  background: rgba(0,0,0,0.55);
+  padding: 6px 9px;
+  line-height: 1.3;
+}
+
+.draft-card .dc-name {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--text-hi);
+  text-shadow: 0 2px 6px rgba(0,0,0,0.8);
+  padding: 6px;
+  text-align: center;
+}
+
+.draft-card .dc-verbs {
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  color: var(--text-mid);
+  background: rgba(0,0,0,0.65);
+  padding: 6px 9px;
+  letter-spacing: 0.2px;
+}
+
+/* 픽/밴된 카드: 풀에서 사라지지 않고 자리에 남아 비활성화된 채로 표시 */
+.draft-card.taken {
+  cursor: default;
+  position: relative;
+  filter: grayscale(0.7) brightness(0.55);
+}
+
+.draft-card.taken:hover { transform: none; box-shadow: none; }
+
+.draft-card .dc-badge {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: rgba(0,0,0,0.55);
+  color: var(--text-hi);
+  z-index: 2;
+}
+
+.draft-card.banned .dc-badge-ban { color: var(--danger); }
+
+/* 밴된 카드: 붉은 대각선 리본으로 "금지됨"이 한눈에 보이게 */
+.draft-card.banned::before {
+  content: "";
+  position: absolute;
+  left: -14%;
+  top: 44%;
+  width: 128%;
+  height: 8px;
+  background: var(--danger);
+  box-shadow: 0 0 12px rgba(255,92,114,0.85);
+  transform: rotate(-18deg);
+  z-index: 1;
+}
+
+/* ==========================================================================
+   카드 도감
+   ========================================================================== */
+.codex-body {
+  display: flex;
+  height: calc(100vh - 44px);
+}
+
+.codex-sidebar {
+  flex: 0 0 220px;
+  border-right: 1px solid var(--line-hair);
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.codex-set-select {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.codex-proto-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.codex-group-title {
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin: 10px 0 2px;
+}
+
+.codex-proto-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border-left: 3px solid var(--item-accent, var(--line-hair));
+  background: var(--bg-panel);
+  color: var(--text-mid);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.codex-proto-item:hover { background: var(--bg-panel-raised); }
+.codex-proto-item.selected {
+  background: var(--bg-panel-raised);
+  color: var(--item-accent, var(--text-hi));
+}
+
+.codex-main {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+
+.codex-banner {
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  border: 1.5px solid var(--banner-accent, var(--line-hair));
+  background: var(--bg-panel-raised);
+  margin-bottom: 18px;
+}
+
+.codex-banner .cb-name {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--banner-accent, var(--text-hi));
+}
+
+.codex-banner .cb-tagline {
+  font-size: 12px;
+  color: var(--text-mid);
+  margin-top: 4px;
+}
+
+.codex-banner .cb-verbs {
+  font-size: 11px;
+  color: var(--banner-accent, var(--phosphor));
+  margin-top: 6px;
+  letter-spacing: 0.3px;
+}
+
+.codex-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  align-items: stretch; /* 같은 행의 카드끼리 제일 긴 카드 높이에 맞춰 함께 늘어남 */
+}
+
+.codex-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  border: 1.5px solid var(--card-accent, var(--line-hair));
+  background: var(--bg-card-back);
+}
+
+.codex-card .cc-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--card-accent, #888);
+  color: #06070a;
+  font-weight: 700;
+}
+
+.codex-card .cc-header .cc-value { font-family: var(--font-mono); font-size: 18px; }
+
+.codex-card .cc-band {
+  flex: 0 0 auto;
+  min-height: 64px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 8px 10px 8px 13px;
+  font-size: 12px;
+  line-height: 1.5;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  background: rgba(0,0,0,0.4);
+  position: relative;
+}
+
+.codex-card .cc-band::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--card-accent, var(--phosphor));
+  opacity: 0.85;
+}
+
+.codex-card .cc-band-empty {
+  min-height: 64px;
+  background: rgba(0,0,0,0.2);
+}
+.codex-card .cc-band-empty::before { opacity: 0.3; }
+
+/* ==========================================================================
+   버림더미/덱 열람 모달
+   ========================================================================== */
+.pile-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(6,7,10,0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+
+.pile-modal-box {
+  width: min(920px, 94vw);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border: 1.5px solid var(--phosphor-dim);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+}
+
+.pile-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line-hair);
+  font-weight: 700;
+  color: var(--phosphor);
+}
+
+.pile-modal-grid {
+  padding: 18px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
 
 .win-overlay {
   position: fixed;

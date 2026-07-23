@@ -27,7 +27,78 @@
       </button>
     </div>
 
+    <p class="tagline" style="margin-top:24px">프로토콜은 어떻게 정할까요?</p>
+    <div class="mode-select">
+      <button class="mode-btn" data-draft="random">
+        <span class="mode-title">무작위 배정</span>
+        <span class="mode-desc">바로 3+3 무작위 배정</span>
+      </button>
+      <button class="mode-btn" data-draft="draft">
+        <span class="mode-title">밴픽</span>
+        <span class="mode-desc">번갈아 픽/밴으로 직접 구성</span>
+      </button>
+    </div>
+
+    <div class="mode-select set-select hidden" id="set-select">
+      <button class="mode-btn small" data-set="main1">
+        <span class="mode-title">MAIN 1 + AUX 1</span>
+      </button>
+      <button class="mode-btn small" data-set="main2">
+        <span class="mode-title">MAIN 2 + AUX 2</span>
+      </button>
+      <button class="mode-btn small" data-set="all">
+        <span class="mode-title">전체</span>
+      </button>
+    </div>
+
     <button id="start-btn" class="start-btn" disabled>게임 시작</button>
+    <button id="codex-btn" class="icon-btn codex-btn-full">Compile Card Database</button>
+  </div>
+</div>
+
+<div id="codex-screen" class="screen hidden">
+  <header class="topbar">
+    <button id="codex-back-btn" class="icon-btn">← 뒤로</button>
+    <span class="topbar-title">Compile Card Database</span>
+  </header>
+
+  <div class="codex-body">
+    <aside class="codex-sidebar">
+      <div class="codex-set-select" id="codex-set-select">
+        <button class="mode-btn small selected" data-cset="main1">MAIN 1 + AUX 1</button>
+        <button class="mode-btn small" data-cset="main2">MAIN 2 + AUX 2</button>
+      </div>
+      <div class="codex-proto-list" id="codex-proto-list"></div>
+    </aside>
+
+    <main class="codex-main">
+      <div class="codex-banner" id="codex-banner"></div>
+      <div class="codex-cards" id="codex-cards"></div>
+    </main>
+  </div>
+</div>
+
+<div id="draft-screen" class="screen hidden">
+  <div class="draft-header">
+    <h1 class="draft-title">프로토콜 선택</h1>
+    <div class="draft-steps" id="draft-steps"></div>
+    <div class="draft-subtitle" id="draft-subtitle"></div>
+  </div>
+
+  <div class="draft-body">
+    <div class="draft-side" id="draft-picks-1">
+      <div class="draft-side-title">플레이어1</div>
+      <div class="draft-picks" id="draft-picks-1-list"></div>
+    </div>
+
+    <div class="draft-pool-wrap">
+      <div class="draft-pool" id="draft-pool"></div>
+    </div>
+
+    <div class="draft-side" id="draft-picks-2">
+      <div class="draft-side-title">플레이어2</div>
+      <div class="draft-picks" id="draft-picks-2-list"></div>
+    </div>
   </div>
 </div>
 
@@ -75,6 +146,16 @@
 
   <div id="card-zoom" class="card-zoom hidden"></div>
 
+  <div id="pile-modal" class="pile-modal hidden">
+    <div class="pile-modal-box">
+      <div class="pile-modal-header">
+        <span id="pile-modal-title"></span>
+        <button id="pile-modal-close" class="icon-btn">닫기</button>
+      </div>
+      <div class="pile-modal-grid" id="pile-modal-grid"></div>
+    </div>
+  </div>
+
   <div id="win-overlay" class="win-overlay hidden">
     <div class="win-card">
       <div class="win-title" id="win-title"></div>
@@ -88,7 +169,11 @@
   "colors": {{ proto_colors | tojson }},
   "values": {{ proto_values | tojson }},
   "cardText": {{ card_text | tojson }},
-  "namesKo": {{ names_ko | tojson }}
+  "namesKo": {{ names_ko | tojson }},
+  "tagline": {{ proto_tagline | tojson }},
+  "verbs": {{ proto_verbs | tojson }},
+  "list": {{ proto_list | tojson }},
+  "set": {{ proto_set | tojson }}
 }
 </script>
 <script src="{{ asset_url('js/app.js') }}"></script>

@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.game.ai_random import RandomAI
 from src.game.engine import Engine
 from src.game import protocols as Protocols
-from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO
+from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO, PROTOCOL_TAGLINE, PROTOCOL_VERBS
+from src.game import draft as DraftMod
+from src.game import draftpool as DraftPool
 
 app = Flask(__name__)
 
@@ -43,6 +45,56 @@ def asset_url(filename):
 
 # game_id -> {"engine": Engine, "lock": threading.Lock()}
 GAMES = {}
+
+# draft_id -> {"draft": Draft, "mode": "hotseat"|"vs_ai", "lock": threading.Lock()}
+DRAFTS = {}
+DRAFT_AI_PLAYER = 2  # vs_ai 밴픽에서는 항상 플레이어2가 AI (MANUAL_STEPS 정의 그대로)
+
+
+def _serialize_draft(entry):
+    d = entry["draft"]
+    cur = d.current()
+    owner = {pid: v for pid, v in d.owner.items()}  # id -> 1 | 2 | "ban"
+    payload = {
+        "mode": entry["mode"],
+        "pool": list(d.pool),
+        "owner": owner,
+        "available": d.available(),
+        "current": cur,
+        "picks": {"1": list(d.picks[1]), "2": list(d.picks[2])},
+        "done": d.done(),
+    }
+    if d.done():
+        p1, p2 = d.result()
+        payload["result"] = {"1": p1, "2": p2}
+    return payload
+
+
+def _draft_ai_choose(avail):
+    """밴픽 AI의 선택 -- 진짜 카드 상성/전략 평가는 없음(로드맵의 '진짜 AI'
+    몫). 지금은 순수 무작위보다 살짝 낫게, 평균 카드 값이 높은 프로토콜을
+    더 선호하는 가중 무작위로만 개선."""
+    weights = []
+    for pid in avail:
+        vals = Protocols.VALUES.get(pid, (0, 1, 2, 3, 4, 5))
+        avg = sum(vals) / len(vals)
+        weights.append(max(0.2, avg))  # 0에 너무 가까워 뽑힐 확률이 0이 되지 않게
+    return random.choices(avail, weights=weights, k=1)[0]
+
+
+def _auto_resolve_ai_draft(entry):
+    """vs_ai 밴픽에서 AI 차례(항상 플레이어2)를 자동 진행."""
+    if entry["mode"] != "vs_ai":
+        return
+    d = entry["draft"]
+    while not d.done() and d.current()["player"] == DRAFT_AI_PLAYER:
+        avail = d.available()
+        if not avail:
+            break
+        pid = _draft_ai_choose(avail)
+        ok, _err = d.apply(DRAFT_AI_PLAYER, pid)
+        if not ok:
+            break
 
 
 def _pick_protocols():
@@ -102,7 +154,51 @@ def index():
     }
     proto_values = {p: list(v) for p, v in Protocols.VALUES.items()}
     return render_template("index.html", proto_colors=proto_colors, proto_values=proto_values,
-                            card_text=CARD_TEXT, names_ko=PROTOCOL_NAME_KO)
+                            card_text=CARD_TEXT, names_ko=PROTOCOL_NAME_KO,
+                            proto_tagline=PROTOCOL_TAGLINE, proto_verbs=PROTOCOL_VERBS,
+                            proto_list=list(Protocols.PROTOCOL_LIST),
+                            proto_set={p: Protocols.set_of(p) for p in Protocols.PROTOCOL_LIST})
+
+
+@app.route("/api/draft/new", methods=["POST"])
+def draft_new():
+    data = request.get_json(force=True) or {}
+    mode = data.get("mode", "hotseat")  # "hotseat" | "vs_ai"
+    sets = data.get("sets")  # None(전체) | ["main1","aux1"] | ["main2","aux2"] 등
+    pool = DraftPool.build({"sets": sets} if sets else {})
+    steps = DraftMod.STEPS if mode == "hotseat" else DraftMod.MANUAL_STEPS
+    d = DraftMod.Draft(pool, steps)
+
+    draft_id = uuid.uuid4().hex[:8]
+    entry = {"draft": d, "mode": mode, "lock": threading.Lock()}
+    DRAFTS[draft_id] = entry
+    _auto_resolve_ai_draft(entry)
+    return jsonify({"draftId": draft_id, "state": _serialize_draft(entry)})
+
+
+@app.route("/api/draft/state/<draft_id>")
+def draft_state(draft_id):
+    entry = DRAFTS.get(draft_id)
+    if not entry:
+        return jsonify({"error": "밴픽 세션을 찾을 수 없어요"}), 404
+    return jsonify(_serialize_draft(entry))
+
+
+@app.route("/api/draft/pick/<draft_id>", methods=["POST"])
+def draft_pick(draft_id):
+    entry = DRAFTS.get(draft_id)
+    if not entry:
+        return jsonify({"error": "밴픽 세션을 찾을 수 없어요"}), 404
+    data = request.get_json(force=True) or {}
+    player = data.get("player")
+    proto_id = data.get("protoId")
+    with entry["lock"]:
+        d = entry["draft"]
+        ok, err = d.apply(player, proto_id)
+        if not ok:
+            return jsonify({"error": err, **_serialize_draft(entry)}), 400
+        _auto_resolve_ai_draft(entry)
+    return jsonify(_serialize_draft(entry))
 
 
 @app.route("/api/new_game", methods=["POST"])
@@ -112,7 +208,10 @@ def new_game():
     ai_side = data.get("aiSide", 2)
     first_player = data.get("firstPlayer", random.choice([1, 2]))
 
-    protocols1, protocols2 = _pick_protocols()
+    protocols1 = data.get("draftedProtocols", {}).get("1")
+    protocols2 = data.get("draftedProtocols", {}).get("2")
+    if not protocols1 or not protocols2:
+        protocols1, protocols2 = _pick_protocols()
 
     ai1 = mode == "vs_ai" and ai_side == 1
     ai2 = mode == "vs_ai" and ai_side == 2

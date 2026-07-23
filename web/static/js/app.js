@@ -23,31 +23,257 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 셋업 화면
 // ----------------------------------------------------------------------------
 let chosenMode = null;
+let chosenDraft = "random";
+let chosenSet = "all";
 
-document.querySelectorAll(".mode-btn").forEach((btn) => {
+document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".mode-btn").forEach((b) => b.classList.remove("selected"));
+    document.querySelectorAll(".mode-btn[data-mode]").forEach((b) => b.classList.remove("selected"));
     btn.classList.add("selected");
     chosenMode = btn.dataset.mode;
     $("#start-btn").disabled = false;
   });
 });
 
-$("#start-btn").addEventListener("click", () => startGame(chosenMode));
+document.querySelectorAll(".mode-btn[data-draft]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn[data-draft]").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    chosenDraft = btn.dataset.draft;
+    $("#set-select").classList.toggle("hidden", chosenDraft !== "draft");
+  });
+});
+document.querySelectorAll(".mode-btn[data-set]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn[data-set]").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    chosenSet = btn.dataset.set;
+  });
+});
+// 기본값을 시각적으로도 선택 표시
+document.querySelector('.mode-btn[data-draft="random"]').classList.add("selected");
+document.querySelector('.mode-btn[data-set="all"]').classList.add("selected");
+
+$("#start-btn").addEventListener("click", () => {
+  if (chosenDraft === "draft") {
+    startDraft(chosenMode, chosenSet);
+  } else {
+    startGame(chosenMode, null);
+  }
+});
 $("#win-newgame").addEventListener("click", () => location.reload());
 $("#new-game-btn").addEventListener("click", () => location.reload());
 
-async function startGame(mode) {
+// ----------------------------------------------------------------------------
+// 버림더미 / 전체 덱 구성 열람 모달
+// ----------------------------------------------------------------------------
+function currentSelfPi(state) {
+  const req = state.pending && state.pending.kind === "input" ? state.pending.req : null;
+  return req ? req.chooser : state.turn;
+}
+
+function openDiscardModal(pi) {
+  if (!lastState) return;
+  const self = currentSelfPi(lastState);
+  if (pi !== self) return; // 실물 규칙과 무관하게, 요청대로 "지금 차례인 사람" 것만 확인 가능
+  const cards = lastState.players[String(pi)].discard.map((c) => ({ proto: c.proto, value: c.value }));
+  showPileModal(`버림더미 — 플레이어${pi}`, cards);
+}
+
+function openDeckModal(pi) {
+  if (!lastState) return;
+  const protos = lastState.players[String(pi)].protocols;
+  const cards = [];
+  [1, 2, 3].forEach((line) => {
+    const proto = protos[String(line)];
+    (PROTO.values[proto] || []).forEach((v) => cards.push({ proto, value: v }));
+  });
+  showPileModal(`전체 덱 구성 — 플레이어${pi} (18장)`, cards);
+}
+
+function showPileModal(title, cards) {
+  $("#pile-modal-title").textContent = title;
+  const grid = $("#pile-modal-grid");
+  grid.innerHTML = "";
+  if (cards.length === 0) {
+    grid.innerHTML = `<div class="card-info-empty">비어있어요</div>`;
+  }
+  cards.forEach((c) => {
+    const accent = PROTO.colors[c.proto] || "#888";
+    grid.appendChild(renderCodexCard(c.proto, c.value, accent));
+  });
+  $("#pile-modal").classList.remove("hidden");
+}
+
+function closePileModal() {
+  $("#pile-modal").classList.add("hidden");
+}
+
+$("#deck-p1").addEventListener("click", () => openDeckModal(1));
+$("#deck-p2").addEventListener("click", () => openDeckModal(2));
+$("#discard-p1").addEventListener("click", () => openDiscardModal(1));
+$("#discard-p2").addEventListener("click", () => openDiscardModal(2));
+$("#pile-modal-close").addEventListener("click", closePileModal);
+$("#pile-modal").addEventListener("click", (ev) => {
+  if (ev.target.id === "pile-modal") closePileModal();
+});
+
+async function startGame(mode, draftedProtocols) {
+  const body = { mode: mode || "hotseat", aiSide: 2 };
+  if (draftedProtocols) body.draftedProtocols = draftedProtocols;
   const res = await fetch("/api/new_game", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: mode || "hotseat", aiSide: 2 }),
+    body: JSON.stringify(body),
   });
   const data = await res.json();
   gameId = data.gameId;
   $("#setup-screen").classList.add("hidden");
+  $("#draft-screen").classList.add("hidden");
   $("#game-screen").classList.remove("hidden");
   handleState(data.state, requestSeq);
+}
+
+// ----------------------------------------------------------------------------
+// 밴픽 화면 -- 실물 프로토콜 카드(로딩 카드) 스타일
+// ----------------------------------------------------------------------------
+let draftId = null;
+let draftGameMode = "hotseat";
+
+// draft.py의 STEPS/MANUAL_STEPS를 그대로 반영 (단계 표시줄 렌더링용).
+const DRAFT_STEPS_META = {
+  hotseat: [
+    { who: 1, action: "pick", count: 1 }, { who: 2, action: "pick", count: 2 },
+    { who: 1, action: "ban", count: 1 }, { who: 2, action: "ban", count: 1 },
+    { who: 1, action: "pick", count: 2 }, { who: 2, action: "pick", count: 1 },
+  ],
+  vs_ai: [
+    { who: 1, action: "pick", count: 3 }, { who: 2, action: "pick", count: 3 },
+  ],
+};
+
+function setToSetsParam(set) {
+  if (set === "main1") return ["main1", "aux1"];
+  if (set === "main2") return ["main2", "aux2"];
+  return null; // 전체
+}
+
+async function startDraft(mode, set) {
+  draftGameMode = mode || "hotseat";
+  const res = await fetch("/api/draft/new", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: draftGameMode, sets: setToSetsParam(set) }),
+  });
+  const data = await res.json();
+  draftId = data.draftId;
+  $("#setup-screen").classList.add("hidden");
+  $("#draft-screen").classList.remove("hidden");
+  renderDraft(data.state);
+}
+
+async function draftPick(player, protoId) {
+  const res = await fetch(`/api/draft/pick/${draftId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ player, protoId }),
+  });
+  const data = await res.json();
+  renderDraft(data);
+}
+
+function renderDraft(state) {
+  const cur = state.current;
+  const stepsMeta = DRAFT_STEPS_META[state.mode] || DRAFT_STEPS_META.hotseat;
+  const doneCount = Object.keys(state.owner).length;
+  renderDraftSteps(stepsMeta, doneCount);
+
+  const subtitle = $("#draft-subtitle");
+  if (cur) {
+    const actLabel = cur.action === "ban"
+      ? `<span class="act-ban">${cur.remaining}개 밴</span>` : `<span class="act-pick">${cur.remaining}개 선택</span>`;
+    subtitle.innerHTML = `<span class="who">플레이어${cur.player}</span> 차례 · ${actLabel}`;
+  } else {
+    subtitle.textContent = "";
+  }
+
+  $("#draft-picks-1").classList.toggle("is-turn", !!cur && cur.player === 1);
+  $("#draft-picks-2").classList.toggle("is-turn", !!cur && cur.player === 2);
+  renderDraftPicks(1, state.picks["1"]);
+  renderDraftPicks(2, state.picks["2"]);
+
+  const poolEl = $("#draft-pool");
+  poolEl.innerHTML = "";
+  state.pool.forEach((protoId) => {
+    const status = state.owner[protoId]; // undefined | 1 | 2 | "ban"
+    poolEl.appendChild(renderDraftCard(protoId, cur, status));
+  });
+
+  if (state.done) {
+    sleep(500).then(() => startGame(draftGameMode, state.result));
+  }
+}
+
+function renderDraftSteps(stepsMeta, doneCount) {
+  const el = $("#draft-steps");
+  el.innerHTML = "";
+  let cum = 0;
+  let curIdx = stepsMeta.length;
+  for (let i = 0; i < stepsMeta.length; i++) {
+    cum += stepsMeta[i].count;
+    if (doneCount < cum) { curIdx = i; break; }
+  }
+  stepsMeta.forEach((s, i) => {
+    const pip = document.createElement("div");
+    pip.className = `draft-step ${s.action}` + (i === curIdx ? " current" : (i < curIdx ? " filled" : ""));
+    pip.textContent = s.action === "ban" ? "✕" : "▾";
+    pip.title = `플레이어${s.who} ${s.action === "ban" ? "밴" : "픽"} ${s.count}개`;
+    el.appendChild(pip);
+  });
+}
+
+// "로딩 카드": 태그라인 / 프로토콜 이름 / 키워드(verbs) -- 실물 카드 뒷면과 동일한 정보.
+function renderDraftCard(protoId, cur, status) {
+  const card = document.createElement("div");
+  const taken = status !== undefined; // 1 | 2 | "ban"
+  card.className = "draft-card" + (taken ? " taken" : "") + (status === "ban" ? " banned" : "");
+  const accent = PROTO.colors[protoId] || "#888";
+  card.style.setProperty("--card-accent", accent);
+  const tagline = (PROTO.tagline && PROTO.tagline[protoId]) || "";
+  const verbs = (PROTO.verbs && PROTO.verbs[protoId]) || "";
+
+  let badge = "";
+  if (status === "ban") badge = `<div class="dc-badge dc-badge-ban">밴됨</div>`;
+  else if (status === 1 || status === 2) badge = `<div class="dc-badge dc-badge-taken">플레이어${status} 픽</div>`;
+
+  card.innerHTML = `
+    <div class="dc-tagline">${tagline}</div>
+    <div class="dc-name">${protoKo(protoId)}</div>
+    <div class="dc-verbs">${verbs}</div>
+    ${badge}
+  `;
+  if (cur && !taken) {
+    card.addEventListener("click", () => draftPick(cur.player, protoId));
+  }
+  return card;
+}
+
+function renderDraftPicks(pi, picks) {
+  const el = $(`#draft-picks-${pi}-list`);
+  el.innerHTML = "";
+  for (let i = 0; i < 3; i++) {
+    const protoId = picks[i];
+    const chip = document.createElement("div");
+    if (protoId) {
+      chip.className = "draft-pick-chip";
+      chip.style.setProperty("--pick-accent", PROTO.colors[protoId] || "");
+      chip.textContent = protoKo(protoId);
+    } else {
+      chip.className = "draft-pick-chip empty";
+      chip.textContent = "-";
+    }
+    el.appendChild(chip);
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -496,7 +722,13 @@ function reorderHand(pi, draggedUid, targetUid) {
 function renderHand(state) {
   const pending = state.pending;
   const req = pending && pending.kind === "input" ? pending.req : null;
-  const chooser = req ? req.chooser : state.turn;
+  let chooser = req ? req.chooser : state.turn;
+  // AI 턴 중 활성 입력 요청이 없으면(애니메이션 진행 중 등) AI의 패가
+  // 노출되지 않도록, 사람 쪽 패를 대신 보여준다.
+  if (!req && state.players[String(chooser)].isAI) {
+    const other = chooser === 1 ? 2 : 1;
+    if (!state.players[String(other)].isAI) chooser = other;
+  }
   const hand = syncHandOrder(chooser, state.players[String(chooser)].hand);
 
   const box = $("#hand-cards");
@@ -932,4 +1164,114 @@ function handleHandCardClick(card, req) {
 function showWin(winner) {
   $("#win-title").textContent = `PLAYER ${winner} COMPILED.`;
   $("#win-overlay").classList.remove("hidden");
+}
+
+// ----------------------------------------------------------------------------
+// 카드 도감
+// ----------------------------------------------------------------------------
+let codexSet = "main1"; // "main1"(=main1+aux1) | "main2"(=main2+aux2)
+let codexSelectedProto = null;
+
+$("#codex-btn").addEventListener("click", openCodex);
+$("#codex-back-btn").addEventListener("click", () => {
+  $("#codex-screen").classList.add("hidden");
+  $("#setup-screen").classList.remove("hidden");
+});
+
+document.querySelectorAll("#codex-set-select [data-cset]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("#codex-set-select [data-cset]").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    codexSet = btn.dataset.cset;
+    codexSelectedProto = null;
+    renderCodexList();
+    selectFirstCodexProto();
+  });
+});
+
+function selectFirstCodexProto() {
+  const first = (PROTO.list || []).find((p) => codexGroupOf(p) === codexSet);
+  if (first) {
+    selectCodexProto(first);
+  } else {
+    $("#codex-banner").innerHTML = "";
+    $("#codex-cards").innerHTML = "";
+  }
+}
+
+function openCodex() {
+  $("#setup-screen").classList.add("hidden");
+  $("#codex-screen").classList.remove("hidden");
+  renderCodexList();
+  selectFirstCodexProto();
+}
+
+function codexGroupOf(protoId) {
+  const s = (PROTO.set && PROTO.set[protoId]) || "main1";
+  return (s === "main1" || s === "aux1") ? "main1" : "main2";
+}
+
+function renderCodexList() {
+  const listEl = $("#codex-proto-list");
+  listEl.innerHTML = "";
+  const subOrder = codexSet === "main1" ? ["main1", "aux1"] : ["main2", "aux2"];
+  const subLabel = { main1: "MAIN 1", aux1: "AUX 1", main2: "MAIN 2", aux2: "AUX 2" };
+  subOrder.forEach((sub) => {
+    const protos = (PROTO.list || []).filter((p) => (PROTO.set && PROTO.set[p]) === sub
+      || (sub === "main1" && !(PROTO.set && PROTO.set[p])));
+    if (!protos.length) return;
+    const header = document.createElement("div");
+    header.className = "codex-group-title";
+    header.textContent = subLabel[sub];
+    listEl.appendChild(header);
+    protos.forEach((protoId) => {
+      const item = document.createElement("div");
+      item.className = "codex-proto-item" + (protoId === codexSelectedProto ? " selected" : "");
+      item.style.setProperty("--item-accent", PROTO.colors[protoId] || "");
+      item.textContent = protoKo(protoId);
+      item.addEventListener("click", () => selectCodexProto(protoId));
+      listEl.appendChild(item);
+    });
+  });
+}
+
+function selectCodexProto(protoId) {
+  codexSelectedProto = protoId;
+  renderCodexList();
+
+  const accent = PROTO.colors[protoId] || "#888";
+  const banner = $("#codex-banner");
+  banner.style.setProperty("--banner-accent", accent);
+  banner.innerHTML = `
+    <div class="cb-name">${protoKo(protoId)}</div>
+    <div class="cb-tagline">${(PROTO.tagline && PROTO.tagline[protoId]) || ""}</div>
+    <div class="cb-verbs">${(PROTO.verbs && PROTO.verbs[protoId]) || ""}</div>
+  `;
+
+  const cardsEl = $("#codex-cards");
+  cardsEl.innerHTML = "";
+  const values = PROTO.values[protoId] || [];
+  values.forEach((value) => {
+    cardsEl.appendChild(renderCodexCard(protoId, value, accent));
+  });
+}
+
+function renderCodexCard(protoId, value, accent) {
+  const el = document.createElement("div");
+  el.className = "codex-card";
+  el.style.setProperty("--card-accent", accent);
+  const text = (PROTO.cardText && PROTO.cardText[`${protoId}_${value}`]) || {};
+  let bands = "";
+  ["top", "mid", "bot"].forEach((z) => {
+    if (text[z] && text[z].length) {
+      bands += `<div class="cc-band">${text[z].join(" ")}</div>`;
+    } else {
+      bands += `<div class="cc-band cc-band-empty"></div>`;
+    }
+  });
+  el.innerHTML = `
+    <div class="cc-header"><span>${protoKo(protoId)}</span><span class="cc-value">${value}</span></div>
+    ${bands}
+  `;
+  return el;
 }
