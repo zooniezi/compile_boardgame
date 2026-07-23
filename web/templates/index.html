@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>COMPILE</title>
+<link rel="icon" type="image/png" href="{{ asset_url('img/penrose.png') }}">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
+</head>
+<body>
+
+<div id="setup-screen" class="screen">
+  <div class="setup-card">
+    <h1 class="logo">COMPILE<span class="logo-cursor">_</span></h1>
+    <p class="tagline">프로토콜을 컴파일하라.</p>
+
+    <div class="mode-select">
+      <button class="mode-btn" data-mode="hotseat">
+        <span class="mode-title">HOTSEAT</span>
+        <span class="mode-desc">한 화면에서 번갈아 플레이</span>
+      </button>
+      <button class="mode-btn" data-mode="vs_ai">
+        <span class="mode-title">VS AI</span>
+        <span class="mode-desc">컴퓨터와 대전 (임시 AI)</span>
+      </button>
+    </div>
+
+    <button id="start-btn" class="start-btn" disabled>게임 시작</button>
+  </div>
+</div>
+
+<div id="game-screen" class="screen hidden">
+  <header class="topbar">
+    <span class="logo-small">COMPILE</span>
+    <button id="new-game-btn" class="icon-btn" title="새 게임">NEW GAME</button>
+  </header>
+
+  <div class="game-body">
+    <main class="board">
+      <div class="deck-col">
+        <div class="deck-box" id="deck-p2"></div>
+        <div class="discard-box" id="discard-p2"></div>
+        <div class="deck-col-spacer"></div>
+        <div class="deck-box" id="deck-p1"></div>
+        <div class="discard-box" id="discard-p1"></div>
+      </div>
+
+      <div class="lines-row" id="lines-row"></div>
+    </main>
+
+    <div class="control-strip">
+      <div id="control-marker" class="control-marker"></div>
+    </div>
+
+    <aside class="side-panel">
+      <div class="turn-box" id="turn-box"></div>
+      <div class="log-list" id="log-list"></div>
+      <div class="card-info-box" id="card-info-box">
+        <div class="card-info-empty">카드에 마우스를 올리면<br>여기에 효과가 표시돼요</div>
+      </div>
+      <div id="prompt-bar" class="prompt-bar hidden">
+        <div class="prompt-text" id="prompt-text"></div>
+        <div class="prompt-actions" id="prompt-actions"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="status-bar" id="status-bar"></div>
+
+  <section class="hand-area">
+    <div id="hand-cards" class="hand-cards"></div>
+  </section>
+
+  <div id="card-zoom" class="card-zoom hidden"></div>
+
+  <div id="win-overlay" class="win-overlay hidden">
+    <div class="win-card">
+      <div class="win-title" id="win-title"></div>
+      <button id="win-newgame" class="start-btn">다시 하기</button>
+    </div>
+  </div>
+</div>
+
+<script id="proto-data" type="application/json">
+{
+  "colors": {{ proto_colors | tojson }},
+  "values": {{ proto_values | tojson }},
+  "cardText": {{ card_text | tojson }},
+  "namesKo": {{ names_ko | tojson }}
+}
+</script>
+<script src="{{ asset_url('js/app.js') }}"></script>
+</body>
+</html>
