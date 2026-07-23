@@ -102,7 +102,7 @@ class Engine:
         self._in_queue = Queue()    # 메인 스레드 -> 게임 스레드
         self._awaiting_answer = False
 
-        # 현재 효과가 해결 중인 카드 스택 (가장 안쪽이 맨 위) -- prompt가
+        # 현재 효과가 resolve 중인 카드 스택 (가장 안쪽이 맨 위) -- prompt가
         # 어떤 카드가 동작 중인지 UI에 알려줄 수 있도록.
         self._card_stack = []
         self.acting = None
@@ -129,7 +129,7 @@ class Engine:
 
         self.turn = first_player or 1
         # cloneAtDecision(나중에 포팅 예정)을 위한 생성 시점 스냅샷: self.turn은
-        # 진행되면서 바뀌고 프로토콜도 제어토큰 재배치로 바뀌므로, 매치 도중
+        # 진행되면서 바뀌고 protocols도 Control 재배치로 바뀌므로, 매치 도중
         # 다시 만들 클론은 "원래" 값을 알아야 한다.
         self._first_player = self.turn
         self._protocols = {
@@ -157,7 +157,7 @@ class Engine:
         self._react_depth = 0
         self._flip_depth = 0
         # 컴파일로 지금 비워지는 중인 라인 (Speed_2가 자기 자신을 그 라인 밖으로
-        # 이동시킬 때, 목적지가 지워지는 라인이면 드러난 카드 효과를 해결하면 안 됨).
+        # 이동시킬 때, 목적지가 지워지는 라인이면 uncover를 resolve하면 안 됨).
         self._compiling_line = None
 
     # -------------------------------------------------------------------
@@ -1145,7 +1145,7 @@ class Engine:
             self.play_card(pi, action["uid"], action["line"], action["faceUp"], action.get("side"))
 
     # -------------------------------------------------------------------
-    # 삭제 / 반환 / 뒤집기 / 이동 동작 (필드 위 카드에 대해 동작)
+    # 삭제 / 반환 / 뒤집기 / 이동 프리미티브 (필드 위 카드에 대해 동작)
     # -------------------------------------------------------------------
     def delete_card(self, card, via_compile=False, silent=False):
         if self.effect_interrupted():
@@ -1170,8 +1170,8 @@ class Engine:
                 del st[i]
                 break
         if via_compile:
-            # 컴파일은 라인 전체의 카드를 한 번에 지운다: 드러난 카드 효과도, 중단 효과도 없이 곧바로 버려진다.
-            
+            # 컴파일은 라인 전체를 한 번에 지운다: uncover도, 중간 effect도 없이
+            # 곧바로 트래시로.
             card.face_up = False
             self.players[card.owner]["discard"].append(card)
             if not silent:
@@ -1272,13 +1272,13 @@ class Engine:
         return True
 
     def can_flip(self, card):
-        """Ice_4 "뒤집을 수 없음": 앞면+드러난 카드일 때만 보호가 활성."""
+        """Ice_4 "뒤집을 수 없음": 앞면+uncovered일 때만 보호가 활성."""
         if card.face_up and card.definition.get("cantFlip") and self.is_uncovered(card):
             return False
         return True
 
     def flip_card(self, card, opts=None):
-        """필드의 카드를 뒤집는다. 앞면으로 뒤집히면 카드의 중단 명령이 다시 발동."""
+        """필드의 카드를 뒤집는다. 앞면으로 뒤집히면 Middle 명령이 다시 발동."""
         if self.effect_interrupted():
             return
         if getattr(card, "_committed", False):
@@ -1323,14 +1323,15 @@ class Engine:
         def after_land(_e):
             self.emit("move", {"uid": card.uid, "toLine": to_line, "noLog": True, "i18n": entry})
             if not was_top:
-                # 옮겨진 카드가 가려진 상태였다면, 목적지에서는 맨 위가 되어
-                # 드러난 카드가 된다 -- 자기 자신의 중단 명령이 다시 발동.
+                # 옮겨진 카드가 COVERED 상태였다면, 목적지에서는 맨 위가 되어
+                # uncover된다 -- 자기 자신의 middle 명령이 다시 발동.
                 self.resolve_middle(card, "uncover")
 
         e = self.commit(card, {"zone": "field", "pi": to_player, "line": to_line,
                                 "faceUp": card.face_up}, after_land)
         if was_top and not (to_player == pi and to_line == line):
-            # 컴파일로 지워지는 중인 라인이면 드러난 카드의 중단 명령 효과는 발동되면 안됨(차피 바로 버려짐)
+            # 컴파일로 지워지는 중인 라인이면 uncover된 카드의 middle을 resolve하면
+            # 안 됨 (어차피 삭제될 카드).
             if line != self._compiling_line:
                 self.fire_uncover(pi, line)
         self.land_commit(e)
@@ -1384,7 +1385,7 @@ class Engine:
                                  "i18n": {"key": "ev.rearrangeFull", "params": {"p": pi}}})
 
     def swap_stacks(self, pi, a, b):
-        """Mirror_2: 두 스택 전체를 통째로 맞바꾼다 (가려진/드러남 트리거 없음)."""
+        """Mirror_2: 두 스택 전체를 통째로 맞바꾼다 (커버/uncover 트리거 없음)."""
         if self.effect_interrupted():
             return
         if a == b:
@@ -1425,7 +1426,7 @@ class Engine:
         return None
 
     def spend_control(self, pi, compiling_line=None):
-        """컴파일/리프레시 시 제어 토큰을 소비: 중앙으로 반납하고 재배치권을 준다."""
+        """컴파일/리프레시 시 Control 토큰을 소비: 중앙으로 반납하고 재배치권을 준다."""
         if self.control != pi:
             return
         self.control = None
@@ -1449,7 +1450,7 @@ class Engine:
 
     def do_compile(self, pi, line):
         """Compile 행동: 라인을 클리어하고 프로토콜을 컴파일 완료로 뒤집는다."""
-        # 제어 토큰을 가지고 있었다면 -- 재배치 포함 -- 컴파일이 해결되기 전에 사용한다.
+        # Control을 쥐고 있었다면 -- 재배치 포함 -- 컴파일이 resolve되기 전에 소비.
         self.spend_control(pi, line)
         cp = self.players[pi]
         recompile = cp["compiled"][line]
@@ -1459,7 +1460,7 @@ class Engine:
                                                         "line": line}}})
         # 세 번째 프로토콜을 완료하는 순간 즉시 승리하므로, 이 컴파일이 유발할 수
         # 있는 다른 어떤 효과도 발동하면 안 된다 (Speed_2, afterDelete/afterCompile,
-        # End 페이즈 등). 승자를 먼저 정해서 runCard가 전부 막아준다.
+        # End 페이즈 등). winner를 먼저 정해서 runCard의 가드가 전부 막아준다.
         cp["compiled"][line] = True
         won = all(cp["compiled"][l] for l in (1, 2, 3))
         if won:
@@ -1467,7 +1468,7 @@ class Engine:
         to_delete = []
         for who in (1, 2):
             to_delete.extend(self.players[who]["stacks"][line])
-        # Speed_2는 컴파일되면 스스로 라인 밖으로 빠져나간다 (상단 명령이라
+        # Speed_2는 컴파일되면 스스로 라인 밖으로 빠져나간다 (top-band 명령이라
         # 덮여있어도 발동).
         self._compiling_line = line
         for c in to_delete:
@@ -1490,7 +1491,7 @@ class Engine:
                     "faceUp": c.face_up,
                 })
         for c in to_delete:
-            self.delete_card(c, True, True)  # silent + viaCompile: ~한 카드마다 이벤트/드러남 트리거 없음
+            self.delete_card(c, True, True)  # silent + viaCompile: per-card 이벤트/uncover 없음
         if clears:
             self.emit("compileClear", {"line": line, "clears": clears, "dur": 0.4})
         if to_delete:
@@ -1523,7 +1524,7 @@ class Engine:
         return lst
 
     def choose_phase_trigger(self, pi, pending, field):
-        """사람에게 남은 시작/종료 효과 중 무엇을 먼저 해결할지 묻는다. pending 안의 인덱스 반환."""
+        """사람에게 남은 Start/End 효과 중 무엇을 먼저 resolve할지 묻는다. pending 안의 인덱스 반환."""
         cards = [e["card"] for e in pending]
         is_start = field == "start"
         pick = self.choose_card_from(pi, cards, {
@@ -1551,7 +1552,7 @@ class Engine:
         return True
 
     def resolve_phase_triggers(self, pi, field, top_field):
-        """스냅샷된 페이즈 효과들을 플레이어가 고르는 순서대로 해결한다."""
+        """스냅샷된 페이즈 효과들을 플레이어가 고르는 순서대로 resolve한다."""
         pending = self.collect_phase_triggers(pi, field, top_field)
         human = not self.players[pi]["isAI"]
         while not self.winner:
@@ -1629,7 +1630,7 @@ class Engine:
             line = None
             # 컴파일은 의무. auto-compile이 꺼져 있는 사람은 버튼을 눌러 직접
             # 트리거해야 한다 (여러 후보가 있으면 라인도 선택). AI/auto-compile은
-            # 즉시 해결.
+            # 즉시 resolve.
             if not me["isAI"] and not self.auto_compile:
                 ans = self.prompt({"type": "confirmCompile", "chooser": pi, "player": pi,
                                     "candidates": compilable, "intent": "compile"})
@@ -1645,7 +1646,7 @@ class Engine:
                         {"prompt": "컴파일할 프로토콜을 선택하세요", "intent": "compile"}
                     ) or compilable[0]
             self.do_compile(pi, line)
-            # 컴파일하면 그게 턴의 전부: 1회성 cant_compile을 지우고 종료.
+            # 컴파일하면 그게 턴 전체다: 1회성 cant_compile을 지우고 종료.
             self.cant_compile[pi] = False
             if self.winner:
                 return
