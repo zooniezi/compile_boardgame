@@ -78,10 +78,12 @@ button {
 /* ==========================================================================
    셋업 화면
    ========================================================================== */
-#setup-screen {
+#setup-screen, #play-setup-screen {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow-y: auto;
+  padding: 24px 0;
 }
 
 .setup-card {
@@ -227,6 +229,15 @@ button {
   letter-spacing: 0.5px;
   color: var(--phosphor);
   font-size: 14px;
+}
+
+.setup-title {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 26px;
+  color: var(--phosphor);
+  text-shadow: 0 0 20px var(--phosphor-glow);
+  margin: 0 0 24px;
 }
 
 .icon-btn {
@@ -770,6 +781,36 @@ button {
 /* ==========================================================================
    손패
    ========================================================================== */
+.opp-hand-area {
+  flex: 0 0 90px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line-hair);
+}
+
+.opp-hand-area .hand-cards { padding: 6px; }
+
+/* 상대 손패 미리보기 카드: 하단 내 손패 카드와 동일한 크기, 뒷면 워터마크만 */
+.opp-hand-area .card.hand-card {
+  cursor: default;
+  background: repeating-linear-gradient(135deg, #171b26, #171b26 4px, #1c202c 4px, #1c202c 8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.opp-hand-area .card.hand-card .ohc-back {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: rgba(238,242,240,0.4);
+  text-align: center;
+  line-height: 1.4;
+}
+
 .hand-area {
   flex: 0 0 106px;
   display: flex;
@@ -1301,6 +1342,175 @@ button {
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   align-items: stretch;
+}
+
+/* ==========================================================================
+   닉네임 입력
+   ========================================================================== */
+.nickname-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.nickname-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: left;
+}
+
+.nickname-field label {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.3px;
+}
+
+.nickname-field input {
+  font-family: var(--font-display);
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--line-hair);
+  border-radius: 4px;
+  padding: 10px 12px;
+  color: var(--text-hi);
+  font-size: 13px;
+}
+
+.nickname-field input:focus {
+  outline: none;
+  border-color: var(--phosphor-dim);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  margin: 12px 0;
+  font-size: 12px;
+  color: var(--text-mid);
+  cursor: pointer;
+}
+
+.toggle-row input { accent-color: var(--phosphor); width: 15px; height: 15px; }
+
+/* ==========================================================================
+   턴 시작 배너 (하스스톤 식)
+   ========================================================================== */
+.turn-banner {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 55;
+}
+
+.turn-banner-text {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 40px;
+  letter-spacing: 1px;
+  color: var(--phosphor);
+  text-shadow: 0 0 30px var(--phosphor-glow), 0 4px 12px rgba(0,0,0,0.6);
+  padding: 20px 48px;
+  border-top: 2px solid var(--phosphor);
+  border-bottom: 2px solid var(--phosphor);
+  background: rgba(6,7,10,0.35);
+  animation: turn-banner-pop 1.6s ease forwards;
+}
+
+@keyframes turn-banner-pop {
+  0%   { opacity: 0; transform: scale(0.85); }
+  15%  { opacity: 1; transform: scale(1); }
+  75%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.04); }
+}
+
+/* ==========================================================================
+   카드 등장 애니메이션 (드로우 / 플레이)
+   ========================================================================== */
+@keyframes card-enter {
+  0%   { opacity: 0; transform: scale(0.55) translateY(8px); }
+  60%  { opacity: 1; transform: scale(1.06) translateY(-2px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.card-enter {
+  animation: card-enter .28s cubic-bezier(.2,.9,.3,1.3);
+}
+
+/* ==========================================================================
+   드롭존: 한쪽 면만 가능해도 텍스트 라벨 표시 + 앞/뒷면 색상 구분
+   ========================================================================== */
+.drop-zone-label {
+  position: absolute;
+  inset: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  border-radius: 5px;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.drop-zone-label.face-up {
+  color: var(--phosphor);
+  border: 2px solid var(--phosphor);
+  background: rgba(61,255,160,0.06);
+}
+
+.drop-zone-label.face-down {
+  color: #7fb8ff;
+  border: 2px solid #7fb8ff;
+  background: rgba(127,184,255,0.08);
+}
+
+.drop-half.up {
+  border-color: var(--phosphor);
+  color: var(--phosphor);
+  background: rgba(61,255,160,0.08);
+}
+
+.drop-half.down {
+  border-color: #7fb8ff;
+  color: #7fb8ff;
+  background: rgba(127,184,255,0.1);
+}
+
+.drop-half.up:hover, .drop-half.up.drag-over {
+  background: rgba(61,255,160,0.24);
+  box-shadow: 0 0 14px var(--phosphor-glow);
+}
+
+.drop-half.down:hover, .drop-half.down.drag-over {
+  background: rgba(127,184,255,0.26);
+  box-shadow: 0 0 14px rgba(127,184,255,0.6);
+}
+
+/* ==========================================================================
+   로그 안의 카드 이름: 호버/클릭 시 카드 정보 표시
+   ========================================================================== */
+.log-card {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.log-card:hover { color: var(--text-hi); }
+
+/* ==========================================================================
+   프롬프트를 유발한(트리거) 카드 강조
+   ========================================================================== */
+.card.trigger-highlight {
+  outline: 2px solid var(--amber);
+  outline-offset: 1px;
+  box-shadow: 0 0 16px rgba(255,180,84,0.65);
 }
 
 .win-overlay {

@@ -15,6 +15,14 @@
   <div class="setup-card">
     <h1 class="logo">COMPILE<span class="logo-cursor">_</span></h1>
     <p class="tagline">프로토콜을 컴파일하라.</p>
+    <button id="goto-play-setup-btn" class="start-btn">게임 시작</button>
+    <button id="codex-btn" class="icon-btn codex-btn-full">Compile Card Database</button>
+  </div>
+</div>
+
+<div id="play-setup-screen" class="screen hidden">
+  <div class="setup-card">
+    <h1 class="setup-title">게임 설정</h1>
 
     <div class="mode-select">
       <button class="mode-btn" data-mode="hotseat">
@@ -25,6 +33,17 @@
         <span class="mode-title">VS AI</span>
         <span class="mode-desc">컴퓨터와 대전 (임시 AI)</span>
       </button>
+    </div>
+
+    <div class="nickname-row">
+      <div class="nickname-field">
+        <label for="nick-p1">플레이어1 닉네임</label>
+        <input type="text" id="nick-p1" maxlength="12" placeholder="플레이어1">
+      </div>
+      <div class="nickname-field" id="nick-p2-field">
+        <label for="nick-p2">플레이어2 닉네임</label>
+        <input type="text" id="nick-p2" maxlength="12" placeholder="플레이어2">
+      </div>
     </div>
 
     <p class="tagline" style="margin-top:24px">프로토콜은 어떻게 정할까요?</p>
@@ -51,8 +70,14 @@
       </button>
     </div>
 
-    <button id="start-btn" class="start-btn" disabled>게임 시작</button>
-    <button id="codex-btn" class="icon-btn codex-btn-full">Compile Card Database</button>
+    <button id="start-btn" class="start-btn" disabled>시작</button>
+
+    <label class="toggle-row">
+      <input type="checkbox" id="confirm-play-toggle" checked>
+      <span>카드 낼 때 확인창 보기</span>
+    </label>
+
+    <button id="back-to-landing-btn" class="icon-btn codex-btn-full">← 뒤로</button>
   </div>
 </div>
 
@@ -107,6 +132,14 @@
     <span class="logo-small">COMPILE</span>
     <button id="new-game-btn" class="icon-btn" title="새 게임">NEW GAME</button>
   </header>
+
+  <section class="opp-hand-area">
+    <div id="opp-hand-cards" class="hand-cards"></div>
+  </section>
+
+  <div id="turn-banner" class="turn-banner hidden">
+    <div class="turn-banner-text" id="turn-banner-text"></div>
+  </div>
 
   <div class="game-body">
     <main class="board">

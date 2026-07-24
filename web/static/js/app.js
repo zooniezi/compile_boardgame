@@ -16,6 +16,35 @@ let rearrangeOrder = null;
 let rearrangeFirstPick = null;
 const handOrders = {};       // pi -> [uid, ...] 사용자가 정한 손패 표시 순서
 
+const PLAYER_NAMES = { 1: "플레이어1", 2: "플레이어2" };
+function pName(pi) {
+  return PLAYER_NAMES[pi] || `플레이어${pi}`;
+}
+
+// 닉네임이 자유 텍스트라, 받침 유무에 따라 "이"/"가"를 골라 붙인다.
+function hasBatchim(str) {
+  if (!str) return false;
+  const code = str.charCodeAt(str.length - 1);
+  if (code < 0xAC00 || code > 0xD7A3) return false; // 완성형 한글 범위 밖(영문/숫자 등)이면 받침 없다고 취급
+  return (code - 0xAC00) % 28 !== 0;
+}
+function josa(pi) {
+  return hasBatchim(pName(pi)) ? "이" : "가";
+}
+
+let knownCardUids = new Set(); // 이전 렌더에서 이미 봤던 카드 uid들
+let newCardUids = new Set();   // 이번 렌더에서 "새로 등장" 판정된 카드 uid들 (드로우/플레이 애니메이션용)
+
+function computeAllCardUids(state) {
+  const s = new Set();
+  for (const pi of [1, 2]) {
+    const p = state.players[String(pi)];
+    p.hand.forEach((c) => s.add(c.uid));
+    [1, 2, 3].forEach((line) => p.stacks[String(line)].forEach((c) => s.add(c.uid)));
+  }
+  return s;
+}
+
 const $ = (sel) => document.querySelector(sel);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -32,6 +61,7 @@ document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
     btn.classList.add("selected");
     chosenMode = btn.dataset.mode;
     $("#start-btn").disabled = false;
+    $("#nick-p2-field").classList.toggle("hidden", chosenMode === "vs_ai");
   });
 });
 
@@ -54,7 +84,27 @@ document.querySelectorAll(".mode-btn[data-set]").forEach((btn) => {
 document.querySelector('.mode-btn[data-draft="random"]').classList.add("selected");
 document.querySelector('.mode-btn[data-set="all"]').classList.add("selected");
 
+$("#goto-play-setup-btn").addEventListener("click", () => {
+  $("#setup-screen").classList.add("hidden");
+  $("#play-setup-screen").classList.remove("hidden");
+});
+$("#back-to-landing-btn").addEventListener("click", () => {
+  $("#play-setup-screen").classList.add("hidden");
+  $("#setup-screen").classList.remove("hidden");
+});
+
+let confirmPlayEnabled = true;
+
+function applyNicknames() {
+  const n1 = $("#nick-p1").value.trim();
+  const n2 = $("#nick-p2").value.trim();
+  PLAYER_NAMES[1] = n1 || "플레이어1";
+  PLAYER_NAMES[2] = (chosenMode === "vs_ai") ? "AI" : (n2 || "플레이어2");
+}
+
 $("#start-btn").addEventListener("click", () => {
+  applyNicknames();
+  confirmPlayEnabled = $("#confirm-play-toggle").checked;
   if (chosenDraft === "draft") {
     startDraft(chosenMode, chosenSet);
   } else {
@@ -77,7 +127,7 @@ function openDiscardModal(pi) {
   const self = currentSelfPi(lastState);
   if (pi !== self) return; // 실물 규칙과 무관하게, 요청대로 "지금 차례인 사람" 것만 확인 가능
   const cards = lastState.players[String(pi)].discard.map((c) => ({ proto: c.proto, value: c.value }));
-  showPileModal(`버림더미 — 플레이어${pi}`, cards);
+  showPileModal(`버림더미 — ${pName(pi)}`, cards);
 }
 
 function openDeckModal(pi) {
@@ -88,7 +138,7 @@ function openDeckModal(pi) {
     const proto = protos[String(line)];
     (PROTO.values[proto] || []).forEach((v) => cards.push({ proto, value: v }));
   });
-  showPileModal(`전체 덱 구성 — 플레이어${pi} (18장)`, cards);
+  showPileModal(`전체 덱 구성 — ${pName(pi)} (18장)`, cards);
 }
 
 function showPileModal(title, cards) {
@@ -129,6 +179,7 @@ async function startGame(mode, draftedProtocols) {
   const data = await res.json();
   gameId = data.gameId;
   $("#setup-screen").classList.add("hidden");
+  $("#play-setup-screen").classList.add("hidden");
   $("#draft-screen").classList.add("hidden");
   $("#game-screen").classList.remove("hidden");
   handleState(data.state, requestSeq);
@@ -168,6 +219,7 @@ async function startDraft(mode, set) {
   const data = await res.json();
   draftId = data.draftId;
   $("#setup-screen").classList.add("hidden");
+  $("#play-setup-screen").classList.add("hidden");
   $("#draft-screen").classList.remove("hidden");
   renderDraft(data.state);
 }
@@ -192,13 +244,15 @@ function renderDraft(state) {
   if (cur) {
     const actLabel = cur.action === "ban"
       ? `<span class="act-ban">${cur.remaining}개 밴</span>` : `<span class="act-pick">${cur.remaining}개 선택</span>`;
-    subtitle.innerHTML = `<span class="who">플레이어${cur.player}</span> 차례 · ${actLabel}`;
+    subtitle.innerHTML = `<span class="who">${pName(cur.player)}</span> 차례 · ${actLabel}`;
   } else {
     subtitle.textContent = "";
   }
 
   $("#draft-picks-1").classList.toggle("is-turn", !!cur && cur.player === 1);
   $("#draft-picks-2").classList.toggle("is-turn", !!cur && cur.player === 2);
+  $("#draft-picks-1 .draft-side-title").textContent = pName(1);
+  $("#draft-picks-2 .draft-side-title").textContent = pName(2);
   renderDraftPicks(1, state.picks["1"]);
   renderDraftPicks(2, state.picks["2"]);
 
@@ -227,7 +281,7 @@ function renderDraftSteps(stepsMeta, doneCount) {
     const pip = document.createElement("div");
     pip.className = `draft-step ${s.action}` + (i === curIdx ? " current" : (i < curIdx ? " filled" : ""));
     pip.textContent = s.action === "ban" ? "✕" : "▾";
-    pip.title = `플레이어${s.who} ${s.action === "ban" ? "밴" : "픽"} ${s.count}개`;
+    pip.title = `${pName(s.who)} ${s.action === "ban" ? "밴" : "픽"} ${s.count}개`;
     el.appendChild(pip);
   });
 }
@@ -244,7 +298,7 @@ function renderDraftCard(protoId, cur, status) {
 
   let badge = "";
   if (status === "ban") badge = `<div class="dc-badge dc-badge-ban">밴됨</div>`;
-  else if (status === 1 || status === 2) badge = `<div class="dc-badge dc-badge-taken">플레이어${status} 픽</div>`;
+  else if (status === 1 || status === 2) badge = `<div class="dc-badge dc-badge-taken">${pName(status)} 픽</div>`;
 
   card.innerHTML = `
     <div class="dc-tagline">${tagline}</div>
@@ -300,7 +354,7 @@ async function handleState(state, mySeq) {
   }
   if (state.pending.kind === "anim") {
     showPromptBar(false);
-    const dur = Math.max(120, (state.pending.dur || 0.3) * 1000 * 0.6);
+    const dur = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
     await sleep(dur);
     const seq = ++requestSeq;
     const res = await fetch(`/api/advance_anim/${gameId}`, { method: "POST" });
@@ -337,6 +391,11 @@ function protoKo(proto) {
 // 전체 렌더링
 // ----------------------------------------------------------------------------
 function render(state) {
+  const allUids = computeAllCardUids(state);
+  newCardUids = new Set([...allUids].filter((u) => !knownCardUids.has(u)));
+
+  maybeShowTurnBanner(state);
+  renderOppHandPreview(state);
   renderTurnBox(state);
   renderControlMarker(state);
   renderDeckCols(state);
@@ -345,6 +404,41 @@ function render(state) {
   renderLog(state);
   renderStatusBar(state);
   reattachPinnedZoom();
+
+  knownCardUids = allUids;
+}
+
+// 하스스톤 식 턴 시작 배너: "OOO의 턴"
+let announcedTurnCount = -1;
+function maybeShowTurnBanner(state) {
+  if (state.winner || state.turnCount == null) return;
+  if (state.turnCount === announcedTurnCount) return;
+  announcedTurnCount = state.turnCount;
+  const el = $("#turn-banner");
+  const textEl = $("#turn-banner-text");
+  textEl.textContent = `${pName(state.turn)}의 턴`;
+  el.classList.remove("hidden");
+  textEl.style.animation = "none";
+  void textEl.offsetWidth; // 강제 리플로우로 애니메이션 재시작
+  textEl.style.animation = "";
+  clearTimeout(window.__turnBannerTimer);
+  window.__turnBannerTimer = setTimeout(() => el.classList.add("hidden"), 1700);
+}
+
+// 상단: "상대"(=지금 결정하는 사람이 아닌 쪽) 손패를, 내 손패와 동일한
+// 크기의 뒷면 카드로 표시 (5번 요청: 크기 통일).
+function renderOppHandPreview(state) {
+  const self = currentSelfPi(state);
+  const opp = self === 1 ? 2 : 1;
+  const hand = state.players[String(opp)].hand;
+  const box = $("#opp-hand-cards");
+  box.innerHTML = "";
+  hand.forEach(() => {
+    const el = document.createElement("div");
+    el.className = "card hand-card";
+    el.innerHTML = `<span class="ohc-back">${pName(opp)}<br>손패</span>`;
+    box.appendChild(el);
+  });
 }
 
 // 고정(pin)된 카드가 있으면, 매 렌더마다 새로 생성되는 카드 엘리먼트에
@@ -390,7 +484,7 @@ function renderTurnBox(state) {
   if (state.winner) { box.innerHTML = ""; return; }
   box.innerHTML = `
     <span class="turn-n">T${state.turnCount}</span> ·
-    <span class="turn-who">플레이어${state.turn}</span>의 턴 · ${phaseLabel(state.phase)}
+    <span class="turn-who">${pName(state.turn)}</span>의 턴 · ${phaseLabel(state.phase)}
     ${state.control ? `<span class="turn-control">CONTROL: P${state.control}</span>` : ""}
   `;
 }
@@ -543,7 +637,8 @@ function renderBoardCard(c, state, isUncovered) {
   const div = document.createElement("div");
   div.dataset.uid = c.uid;
   div.className = "card board-card" + (c.faceUp ? " face-up" : " face-down")
-    + (isUncovered ? " uncovered" : " covered");
+    + (isUncovered ? " uncovered" : " covered")
+    + (newCardUids.has(c.uid) ? " card-enter" : "");
 
   if (c.faceUp) {
     const color = PROTO.colors[c.proto] || "#888";
@@ -735,7 +830,7 @@ function renderHand(state) {
   box.innerHTML = "";
   hand.forEach((c) => {
     const el = document.createElement("div");
-    el.className = "card hand-card";
+    el.className = "card hand-card" + (newCardUids.has(c.uid) ? " card-enter" : "");
     el.dataset.uid = c.uid;
     const color = PROTO.colors[c.proto] || "#888";
     el.style.setProperty("--card-accent", color);
@@ -819,21 +914,34 @@ function computeZoneMatches(uid, pi, line) {
     (a.side ? a.side === pi : pi === chooser));
 }
 
+function confirmAndPlay(action) {
+  if (!confirmPlayEnabled) { submitAnswer(action); return; }
+  const card = findCardByUid(lastState, action.uid);
+  const label = card ? `${protoKo(card.proto)}${card.value}` : "카드";
+  const faceLabel = action.faceUp ? "앞면" : "뒷면";
+  showPromptBar(true,
+    `<span class="prompt-who">${label}</span> 카드를 라인 ${action.line}에 <b>${faceLabel}</b>으로 플레이할까요?`,
+    [
+      { label: "예", onClick: () => submitAnswer(action) },
+      { label: "아니오", secondary: true, onClick: () => renderPrompt(lastState) },
+    ]);
+}
+
 function makeDropHalf(kind, label, action) {
   const half = document.createElement("div");
   half.className = `drop-half ${kind}`;
   half.textContent = label;
-  half.addEventListener("click", (ev) => { ev.stopPropagation(); submitAnswer(action); });
+  half.addEventListener("click", (ev) => { ev.stopPropagation(); confirmAndPlay(action); });
   half.addEventListener("dragover", (ev) => { ev.preventDefault(); half.classList.add("drag-over"); });
   half.addEventListener("dragleave", () => half.classList.remove("drag-over"));
-  half.addEventListener("drop", (ev) => { ev.preventDefault(); ev.stopPropagation(); submitAnswer(action); });
+  half.addEventListener("drop", (ev) => { ev.preventDefault(); ev.stopPropagation(); confirmAndPlay(action); });
   return half;
 }
 
 function setDropZones(uid) {
   document.querySelectorAll(".stack-zone").forEach((zoneEl) => {
     zoneEl.classList.remove("drop-ok", "drag-over");
-    zoneEl.querySelectorAll(".drop-half").forEach((h) => h.remove());
+    zoneEl.querySelectorAll(".drop-half, .drop-zone-label").forEach((h) => h.remove());
     if (!uid) return;
     const pi = Number(zoneEl.dataset.pi);
     const line = Number(zoneEl.dataset.line);
@@ -848,7 +956,13 @@ function setDropZones(uid) {
       zoneEl.appendChild(makeDropHalf("up", "앞면", faceUpAction));
       zoneEl.appendChild(makeDropHalf("down", "뒷면", faceDownAction));
     } else {
+      // 한쪽 면만 가능해도 어느 면인지 텍스트로 표시 (3번 요청)
       zoneEl.classList.add("drop-ok");
+      const label = document.createElement("div");
+      const onlyUp = !!faceUpAction;
+      label.className = `drop-zone-label ${onlyUp ? "face-up" : "face-down"}`;
+      label.textContent = onlyUp ? "앞면" : "뒷면";
+      zoneEl.appendChild(label);
     }
   });
 }
@@ -857,7 +971,7 @@ function attemptPlayOnZone(uid, pi, line) {
   if (!uid) return;
   const matches = computeZoneMatches(uid, pi, line);
   if (matches.length === 1) {
-    submitAnswer(matches[0]);
+    confirmAndPlay(matches[0]);
   } else if (matches.length > 1) {
     // 앞/뒤가 둘 다 있는 일반적인 경우는 drop-half가 이미 처리하므로 여기 안 옴;
     // side까지 겹치는 드문 경우에 대한 안전망으로만 남겨둔다.
@@ -881,57 +995,57 @@ function attachLineClickForChooseLine(colEl, line, req) {
 // ----------------------------------------------------------------------------
 function cardLabel(card) {
   if (!card) return "카드";
-  return `${protoKo(card.proto)}${card.value}`;
+  return `<span class="log-card" data-proto="${card.proto}" data-value="${card.value}">${protoKo(card.proto)}${card.value}</span>`;
 }
 
 const LOG_KO = {
   "ev.gameStart": () => "게임 시작",
-  "ev.turnStart": (p) => `— 턴 ${p.n} · 플레이어${p.p} —`,
-  "ev.draw": (p) => `플레이어${p.p}가 카드 ${p.n}장을 뽑음`,
-  "ev.drawFromDeck": (p) => `플레이어${p.p}가 플레이어${p.opp}의 덱에서 카드를 가져옴`,
-  "ev.refresh": (p) => `플레이어${p.p}가 리프레시합니다`,
-  "ev.discardCard": (p) => `플레이어${p.p}가 ${cardLabel(p.card)} 버림`,
-  "ev.discardDeck": (p) => `플레이어${p.p}가 덱 전체(${p.n}장)를 버림`,
-  "ev.discardToOpp": (p) => `플레이어${p.p}가 카드를 플레이어${p.opp}의 버림더미로 보냄`,
-  "ev.give": (p) => `플레이어${p.from}가 플레이어${p.to}에게 카드를 줌`,
-  "ev.take": (p) => `플레이어${p.to}가 플레이어${p.from}의 카드를 가져옴`,
-  "ev.takeBoard": (p) => `플레이어${p.p}가 필드의 카드를 손으로 가져옴`,
-  "ev.takeBoardCard": (p) => `플레이어${p.p}가 ${cardLabel(p.card)}를 손으로 가져옴`,
-  "ev.playFaceDown": (p) => `플레이어${p.p}가 라인${p.line}에 카드를 뒷면으로 냄`,
-  "ev.playFaceUp": (p) => `플레이어${p.p}가 라인${p.line}에 ${cardLabel(p.card)} 앞면으로 냄`,
+  "ev.turnStart": (p) => `— 턴 ${p.n} · ${pName(p.p)} —`,
+  "ev.draw": (p) => `${pName(p.p)}${josa(p.p)} 카드 ${p.n}장을 뽑음`,
+  "ev.drawFromDeck": (p) => `${pName(p.p)}${josa(p.p)} ${pName(p.opp)}의 덱에서 카드를 가져옴`,
+  "ev.refresh": (p) => `${pName(p.p)}${josa(p.p)} 리프레시합니다`,
+  "ev.discardCard": (p) => `${pName(p.p)}${josa(p.p)} ${cardLabel(p.card)} 버림`,
+  "ev.discardDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱 전체(${p.n}장)를 버림`,
+  "ev.discardToOpp": (p) => `${pName(p.p)}${josa(p.p)} 카드를 ${pName(p.opp)}의 버림더미로 보냄`,
+  "ev.give": (p) => `${pName(p.from)}${josa(p.from)} ${pName(p.to)}에게 카드를 줌`,
+  "ev.take": (p) => `${pName(p.to)}${josa(p.to)} ${pName(p.from)}의 카드를 가져옴`,
+  "ev.takeBoard": (p) => `${pName(p.p)}${josa(p.p)} 필드의 카드를 손으로 가져옴`,
+  "ev.takeBoardCard": (p) => `${pName(p.p)}${josa(p.p)} ${cardLabel(p.card)}를 손으로 가져옴`,
+  "ev.playFaceDown": (p) => `${pName(p.p)}${josa(p.p)} 라인${p.line}에 카드를 뒷면으로 냄`,
+  "ev.playFaceUp": (p) => `${pName(p.p)}${josa(p.p)} 라인${p.line}에 ${cardLabel(p.card)} 앞면으로 냄`,
   "ev.flipUp": (p) => `${cardLabel(p.card)} 앞면으로 뒤집힘`,
   "ev.flipDownCard": (p) => `${cardLabel(p.card)} 뒷면으로 뒤집힘`,
-  "ev.delete": (p) => `플레이어${p.p}가 라인${p.line}의 ${cardLabel(p.card)} 삭제`,
-  "ev.return": (p) => `플레이어${p.p}가 카드를 손으로 되돌림`,
-  "ev.returnCard": (p) => `플레이어${p.p}가 ${cardLabel(p.card)}를 손으로 되돌림`,
-  "ev.returnToDeck": (p) => `플레이어${p.p}의 카드가 덱 위로 되돌아감`,
-  "ev.returnToDeckCard": (p) => `플레이어${p.p}의 ${cardLabel(p.card)}가 덱 위로 되돌아감`,
-  "ev.move": (p) => `플레이어${p.p}가 카드를 라인${p.fromLine}→라인${p.line}로 이동`,
-  "ev.moveCard": (p) => `플레이어${p.p}가 ${cardLabel(p.card)}를 라인${p.fromLine}→라인${p.line}로 이동`,
+  "ev.delete": (p) => `${pName(p.p)}${josa(p.p)} 라인${p.line}의 ${cardLabel(p.card)} 삭제`,
+  "ev.return": (p) => `${pName(p.p)}${josa(p.p)} 카드를 손으로 되돌림`,
+  "ev.returnCard": (p) => `${pName(p.p)}${josa(p.p)} ${cardLabel(p.card)}를 손으로 되돌림`,
+  "ev.returnToDeck": (p) => `${pName(p.p)}의 카드가 덱 위로 되돌아감`,
+  "ev.returnToDeckCard": (p) => `${pName(p.p)}의 ${cardLabel(p.card)}가 덱 위로 되돌아감`,
+  "ev.move": (p) => `${pName(p.p)}${josa(p.p)} 카드를 라인${p.fromLine}→라인${p.line}로 이동`,
+  "ev.moveCard": (p) => `${pName(p.p)}${josa(p.p)} ${cardLabel(p.card)}를 라인${p.fromLine}→라인${p.line}로 이동`,
   "ev.reveal": (p) => `${cardLabel(p.card)} 공개`,
   "ev.revealFacedown": (p) => `뒷면 카드 공개: ${cardLabel(p.card)}`,
-  "ev.revealDeck": (p) => `플레이어${p.p}가 덱을 공개`,
-  "ev.revealHand": (p) => `플레이어${p.p}가 손패를 공개 (${(p.cards || []).length}장)`,
-  "ev.revealTopStay": (p) => `플레이어${p.p}의 덱 맨 위 카드가 공개된 채로 유지: ${cardLabel(p.card)}`,
-  "ev.reshuffle": (p) => `플레이어${p.p}가 버림더미(${p.n}장)를 덱에 셔플`,
-  "ev.shuffleDeck": (p) => `플레이어${p.p}가 덱을 셔플`,
-  "ev.millTop": (p) => `플레이어${p.p}의 덱 맨 위 카드가 버려짐: ${cardLabel(p.card)}`,
-  "ev.controlTake": (p) => `플레이어${p.p}가 Control 획득`,
-  "ev.controlSpend": (p) => `플레이어${p.p}가 Control 소비`,
-  "ev.rearrange": (p) => `플레이어${p.p}가 프로토콜 라인${p.a}·${p.b} 교환`,
-  "ev.rearrangeFull": (p) => `플레이어${p.p}가 프로토콜을 재배치`,
-  "ev.swapStacks": (p) => `플레이어${p.p}가 라인${p.a}·${p.b} 스택을 통째로 교환`,
-  "ev.compile": (p) => `플레이어${p.p}가 ${p.proto}(라인${p.line}) 컴파일!`,
-  "ev.recompile": (p) => `플레이어${p.p}가 ${p.proto}(라인${p.line}) 재컴파일`,
-  "ev.compileFlip": (p) => `플레이어${p.p}의 ${p.proto}(라인${p.line}) 컴파일 완료로 표시`,
-  "ev.noCompile": (p) => `플레이어${p.opp}는 이번엔 컴파일 불가`,
+  "ev.revealDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱을 공개`,
+  "ev.revealHand": (p) => `${pName(p.p)}${josa(p.p)} 손패를 공개 (${(p.cards || []).length}장)`,
+  "ev.revealTopStay": (p) => `${pName(p.p)}의 덱 맨 위 카드가 공개된 채로 유지: ${cardLabel(p.card)}`,
+  "ev.reshuffle": (p) => `${pName(p.p)}${josa(p.p)} 버림더미(${p.n}장)를 덱에 셔플`,
+  "ev.shuffleDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱을 셔플`,
+  "ev.millTop": (p) => `${pName(p.p)}의 덱 맨 위 카드가 버려짐: ${cardLabel(p.card)}`,
+  "ev.controlTake": (p) => `${pName(p.p)}${josa(p.p)} 제어권 획득`,
+  "ev.controlSpend": (p) => `${pName(p.p)}${josa(p.p)} 제어권 소비`,
+  "ev.rearrange": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 라인${p.a}·${p.b} 교환`,
+  "ev.rearrangeFull": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜을 재배치`,
+  "ev.swapStacks": (p) => `${pName(p.p)}${josa(p.p)} 라인${p.a}·${p.b} 스택을 통째로 교환`,
+  "ev.compile": (p) => `${pName(p.p)}${josa(p.p)} ${p.proto}(라인${p.line}) 컴파일!`,
+  "ev.recompile": (p) => `${pName(p.p)}${josa(p.p)} ${p.proto}(라인${p.line}) 재컴파일`,
+  "ev.compileFlip": (p) => `${pName(p.p)}의 ${p.proto}(라인${p.line}) 컴파일 완료로 표시`,
+  "ev.noCompile": (p) => `${pName(p.opp)}는 이번엔 컴파일 불가`,
   "ev.middleIgnored": (p) => `라인${p.line}에서 Middle 명령 무시됨`,
-  "ev.middleFear": (p) => `플레이어${p.p}의 Middle 명령이 상대 효과로 무시됨`,
-  "ev.stateNumber": (p) => `플레이어${p.p}가 숫자 "${p.n}"을 말함`,
-  "ev.stateProtocol": (p) => `플레이어${p.p}가 프로토콜 "${p.proto}"를 말함`,
-  "ev.deckShortPlay": (p) => `플레이어${p.p}의 덱이 ${p.n}장뿐이라 ${p.lines}개 라인에 다 못 냄`,
-  "ev.stalemate": (p) => `턴 상한 도달 -- 무승부 판정: 플레이어${p.p} 승리`,
-  "ev.win": (p) => `★ 플레이어${p.p} 승리! ★`,
+  "ev.middleFear": (p) => `${pName(p.p)}의 Middle 명령이 상대 효과로 무시됨`,
+  "ev.stateNumber": (p) => `${pName(p.p)}${josa(p.p)} 숫자 "${p.n}"을 말함`,
+  "ev.stateProtocol": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 "${p.proto}"를 말함`,
+  "ev.deckShortPlay": (p) => `${pName(p.p)}의 덱이 ${p.n}장뿐이라 ${p.lines}개 라인에 다 못 냄`,
+  "ev.stalemate": (p) => `턴 상한 도달 -- 무승부 판정: ${pName(p.p)} 승리`,
+  "ev.win": (p) => `★ ${pName(p.p)} 승리! ★`,
 };
 
 function formatLogEntry(entry) {
@@ -947,14 +1061,21 @@ function renderLog(state) {
   const list = $("#log-list");
   const wasAtBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
   list.innerHTML = "";
+  const n1 = pName(1);
+  const n2 = pName(2);
   (state.log || []).forEach((entry) => {
     const text = formatLogEntry(entry);
     if (!text) return;
     const div = document.createElement("div");
     div.className = "log-entry";
-    div.innerHTML = text
-      .replace(/플레이어1/g, '<span class="p1">플레이어1</span>')
-      .replace(/플레이어2/g, '<span class="p2">플레이어2</span>');
+    let html = text.split(n1).join(`<span class="p1">${n1}</span>`);
+    if (n2 !== n1) html = html.split(n2).join(`<span class="p2">${n2}</span>`);
+    div.innerHTML = html;
+    div.querySelectorAll(".log-card").forEach((el) => {
+      const card = { proto: el.dataset.proto, value: Number(el.dataset.value) };
+      attachCardInfoHover(el, card, true);
+      el.addEventListener("click", (ev) => { ev.stopPropagation(); togglePinCard(el, card, true); });
+    });
     list.appendChild(div);
   });
   if (wasAtBottom) list.scrollTop = list.scrollHeight;
@@ -995,10 +1116,38 @@ function showPromptBar(visible, html, buttons) {
   });
 }
 
+function findCardByUid(state, uid) {
+  if (uid == null) return null;
+  for (const pi of [1, 2]) {
+    const p = state.players[String(pi)];
+    for (const c of p.hand) if (c.uid === uid) return c;
+    for (const line of [1, 2, 3]) {
+      for (const c of p.stacks[String(line)]) if (c.uid === uid) return c;
+    }
+    for (const c of p.discard) if (c.uid === uid) return c;
+  }
+  return null;
+}
+
+function sourceCardNote(state, req) {
+  if (!req || req.sourceUid == null) return "";
+  const card = findCardByUid(state, req.sourceUid);
+  if (!card) return "";
+  return ` <span style="color:var(--amber)">(${protoKo(card.proto)}${card.value} 카드로 인해 발동)</span>`;
+}
+
+function highlightTriggerCard(req) {
+  document.querySelectorAll(".card.trigger-highlight").forEach((el) => el.classList.remove("trigger-highlight"));
+  if (!req || req.sourceUid == null) return;
+  const el = document.querySelector(`.card[data-uid="${req.sourceUid}"]`);
+  if (el) el.classList.add("trigger-highlight");
+}
+
 function renderPrompt(state) {
   const req = state.pending.req;
   const chooser = req.chooser;
-  const who = `<span class="prompt-who">플레이어${chooser}</span>`;
+  const who = `<span class="prompt-who">${pName(chooser)}</span>${sourceCardNote(state, req)}`;
+  highlightTriggerCard(req);
 
   // action(카드 내기) 프롬프트가 아니면, 이전 단계의 legalActions가 남아있다가
   // 드래그로 잘못 "카드 내기"가 되는 사고를 막기 위해 즉시 비운다.
@@ -1040,7 +1189,7 @@ function renderPrompt(state) {
       ]);
       break;
     case "choosePlayer":
-      showPromptBar(true, `${who}: Control -- 누구의 프로토콜을 재배치할까요?`, [
+      showPromptBar(true, `${who}: 제어권 -- 누구의 프로토콜을 재배치할까요?`, [
         { label: "내 프로토콜", onClick: () => submitAnswer(chooser) },
         { label: "상대 프로토콜", onClick: () => submitAnswer(chooser === 1 ? 2 : 1) },
         { label: "재배치 안 함", secondary: true, onClick: () => submitAnswer(null) },
@@ -1162,7 +1311,7 @@ function handleHandCardClick(card, req) {
 // 승리 오버레이
 // ----------------------------------------------------------------------------
 function showWin(winner) {
-  $("#win-title").textContent = `PLAYER ${winner} COMPILED.`;
+  $("#win-title").textContent = `${pName(winner).toUpperCase()} COMPILED.`;
   $("#win-overlay").classList.remove("hidden");
 }
 
