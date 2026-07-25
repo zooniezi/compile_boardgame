@@ -225,8 +225,11 @@ def new_game():
     if ai2:
         ai_modules[2] = RandomAI()
 
+    # AI 시뮬레이션(clone_at_decision 등)이 이 판을 재생하려면 시드가 필요함.
+    # 매 판마다 독립적으로 생성 -- 32비트 범위면 random.Random(seed)에 충분.
+    seed = random.randint(1, 2**31 - 1)
     e = Engine(protocols1=protocols1, protocols2=protocols2, ai1=ai1, ai2=ai2,
-               ai_modules=ai_modules, first_player=first_player)
+               ai_modules=ai_modules, first_player=first_player, seed=seed)
     game_id = uuid.uuid4().hex[:8]
     GAMES[game_id] = {"engine": e, "lock": threading.Lock()}
     e.start()

@@ -1422,6 +1422,8 @@ button {
 }
 
 .nickname-field input {
+  width: 100%;
+  box-sizing: border-box;
   font-family: var(--font-display);
   background: var(--bg-panel-raised);
   border: 1px solid var(--line-hair);

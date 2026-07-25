@@ -20,6 +20,17 @@ from src.game import rules as Rules
 from src.game import carddefs as Cards
 from src.game.card import Card
 
+# discard()가 블로킹 중인 게임 스레드를 깨워서 즉시 정리시킬 때 쓰는 신호.
+# AI 시뮬레이션(clone_at_decision)이 만든 클론은 평가 후 버려지는데, 그냥
+# 방치하면 스레드가 _in_queue.get()에 영원히 블로킹된 채로 남는다 --
+# 이 poison pill을 받으면 대기 중이던 코드가 즉시 _EngineDiscarded를 던져서
+# 스레드가 자연스럽게(기존 예외 처리 경로로) 종료되게 한다.
+_DISCARD = object()
+
+
+class _EngineDiscarded(Exception):
+    """discard()가 블로킹 중인 스레드를 정리하려고 내부적으로 쓰는 신호."""
+
 # 여러 장을 한꺼번에 옮길 때(덱->손, 손->버림, 컴파일 라인 정리) 한 장씩
 # 순서대로 애니메이션되도록 카드 사이에 주는 간격(초).
 MOVE_STAGGER = 0.16
@@ -84,8 +95,26 @@ class Engine:
         # 매치 진행을 결정론적으로 만들어서 리플레이가 똑같이 재현된다.
         # self.aux_rng는 메커니즘과 무관한 잡음(AI 숙고 시간 등)에 쓰이며
         # 메커니즘 스트림을 절대 건드리면 안 된다.
-        self.rng = rng or (lambda n: random.randint(1, n))
-        self.aux_rng = aux_rng or self.rng
+        #
+        # seed가 주어지면 실제로 시드된 random.Random을 만들어 쓴다 (예전엔
+        # self.seed에 저장만 되고 rng 생성엔 전혀 반영이 안 되던 죽은
+        # 파라미터였음 -- clone_at_decision의 재생 기반 복제가 여기 의존함).
+        # rng를 직접 넘기면(테스트 등) 그게 우선이고, aux_rng는 메커니즘
+        # 스트림과 겹치지 않도록 다른 시드에서 파생한 별도 스트림을 쓴다.
+        if rng is not None:
+            self.rng = rng
+        elif seed is not None:
+            _rng_state = random.Random(seed)
+            self.rng = lambda n: _rng_state.randint(1, n)
+        else:
+            self.rng = lambda n: random.randint(1, n)
+        if aux_rng is not None:
+            self.aux_rng = aux_rng
+        elif seed is not None:
+            _aux_state = random.Random(seed ^ 0x5BD1E995)
+            self.aux_rng = lambda n: _aux_state.randint(1, n)
+        else:
+            self.aux_rng = self.rng
 
         self.uid = 0
         self.cards_by_uid = {}
@@ -150,6 +179,19 @@ class Engine:
         self.seed = seed
         self.ai_lookahead = ai_lookahead
 
+        # clone_at_decision()이 쓰는 재생 큐. None이면 평소대로 동작.
+        # 값이 있으면(리스트) prompt/emit이 멈추지 않고 그 값들을 그대로
+        # 소비하며 빠르게 재생하다가, 다 쓰면 그 지점부터 진짜로 멈춘다
+        # (isAI 여부와 무관하게) -- 캐치업한 그 지점이 caller가 실제로
+        # 답해야 하는 결정 지점이 되도록.
+        self._replay = None
+        # 재생이 끝나는 순간 켜지고 그 뒤로는 절대 안 꺼진다: 시뮬레이션
+        # 클론은 (원본 살아있는 판이 실제로 AI끼리 두는 판이라 ai1=ai2=True로
+        # 만들어졌어도) 캐치업한 결정부터는 그 턴 안의 모든 후속 하위 결정을
+        # 전부 playout()의 policy가 답해야 한다 -- 원본 AI 모듈로 자동
+        # resolve해버리면(sim엔 실제 AI 모듈을 안 넣어뒀으므로) 크래시난다.
+        self._sim_paused_mode = False
+
         # 진행 중인 zone 이동("commit된 카드") 큐.
         self._commits = []
         # fireReactiveSnapshot의 재귀 깊이 가드 (reactive가 reactive를 유발하는
@@ -210,6 +252,48 @@ class Engine:
         """편의 메서드: 애니메이션 이벤트를 확인/종료한다."""
         if self.pending and self.pending.get("kind") == "anim":
             self.step(None)
+
+    def clone_at_decision(self):
+        """AI 시뮬레이션(1수 앞보기/ISMCTS) 전용 복제.
+
+        살아있는 엔진(스레드/큐가 실제로 붙어 도는 그 인스턴스)을 그대로
+        복제하는 게 아니다 (스레드/락은 애초에 pickle/deepcopy가 안 됨).
+        대신 같은 시드로 새 Engine을 만들어 self.answer_log를 그대로
+        재생해서, 지금과 완전히 같은 결정 지점까지 따라잡는다.
+
+        재생 중엔 prompt()/emit()이 멈추지 않고 기록된 값을 즉시 소비하며
+        빠르게 지나가다가(_replay), 재생이 끝나는 순간 -- 정확히 지금 이
+        판이 답하려는 그 프롬프트에서 -- isAI 여부와 무관하게 진짜로
+        멈춘다. 그 지점부터 caller가 answer()로 원하는 후보 액션을 직접
+        시도해볼 수 있다 (원본은 전혀 건드리지 않는 완전히 독립된 사본).
+
+        정상적인 호출 위치는 AI 자신의 decide(g, req) 안, 즉 이 req의
+        답이 아직 self.answer_log에 안 남은 바로 그 시점이다 -- 이때는
+        prompt()가 AI 분기라 self.pending이 이 req를 반영하지 않지만
+        (양쪽 다 AI면 pending은 절대 "input"이 안 됨), 재생 메커니즘
+        자체가 answer_log 길이만으로 정확히 같은 지점을 재구성하므로
+        문제없다. (사람 차례가 진짜로 멈춰있을 때 바깥에서 힌트용으로
+        불러도 마찬가지로 동작한다.)
+
+        seed가 없거나(재현 불가능한 판), 재생이 어긋나면(예: 도중에 카드
+        로직이 바뀌어 프롬프트 수가 달라짐) None을 반환한다 -- 호출자는
+        이 경우 시뮬레이션 없이 휴리스틱으로 안전하게 폴백해야 한다.
+        """
+        if self.seed is None:
+            return None
+        protos1 = [self._protocols[1][line] for line in (1, 2, 3)]
+        protos2 = [self._protocols[2][line] for line in (1, 2, 3)]
+        sim = Engine(protocols1=protos1, protocols2=protos2,
+                     ai1=True, ai2=True,
+                     seed=self.seed, first_player=self._first_player,
+                     auto_compile=self.auto_compile, auto_refresh=self.auto_refresh,
+                     decks=self.fixed_decks)
+        sim._replay = [a["value"] for a in self.answer_log]
+        sim.start()
+        if sim.error or not (sim.pending and sim.pending.get("kind") == "input"):
+            sim.dispose()  # 실패 경로에서도 블로킹 중인 스레드가 있으면 정리
+            return None
+        return sim
 
     # -------------------------------------------------------------------
     # 카드 스택 / 효과 실행
@@ -287,6 +371,28 @@ class Engine:
         fn()
         top["inCommand"] = prev
 
+    def _wait_for_answer(self):
+        """_in_queue에서 답을 기다린다. discard()의 poison pill을 받으면
+        즉시 _EngineDiscarded를 던져 스레드가 정리되게 한다. 모든 블로킹
+        지점(prompt/spend_control)이 이 메서드 하나를 거치게 통일한다."""
+        value = self._in_queue.get()
+        if value is _DISCARD:
+            raise _EngineDiscarded()
+        return value
+
+    def dispose(self):
+        """더 이상 쓸 일 없는 엔진(특히 AI 시뮬레이션 클론)의 스레드를
+        정리한다. 블로킹 중인 스레드가 있으면 깨워서 즉시 종료시키고,
+        실제로 끝났음을 확인한 뒤에 반환한다. 이미 끝난 엔진에 불러도
+        안전(아무 일도 안 함)."""
+        if self._thread is None:
+            return
+        if self._awaiting_answer:
+            self._in_queue.put(_DISCARD)
+            self._out_queue.get()  # __error__(정리됨) 또는 __dead__ 대기
+        self._thread = None
+        self._awaiting_answer = False
+
     def prompt(self, req):
         """플레이어에게 결정을 요청한다. 사람이면 입력 대기, AI면 즉시 결정."""
         if self.effect_interrupted():
@@ -299,6 +405,23 @@ class Engine:
                 req["sourceBand"] = top["band"]
             if req.get("sourceChain") is None:
                 req["sourceChain"] = self.active_chain()
+        if self._replay is not None:
+            if self._replay:
+                value = self._replay.pop(0)
+                self.answer_log.append({"value": value})
+                return value
+            # 재생 끝: 지금부터가 원본이 실제로 답해야 했던 결정 지점이다.
+            # isAI 여부와 무관하게 진짜로 멈춰서 caller(시뮬레이션 드라이버)가
+            # 후보 액션을 직접 답하게 한다. 이후 이 판이 끝날 때까지 계속
+            # 이렇게 동작해야 하므로(그 턴 안의 하위 결정들도 playout()의
+            # policy가 답함) _sim_paused_mode를 영구히 켠다.
+            self._replay = None
+            self._sim_paused_mode = True
+        if self._sim_paused_mode:
+            if threading.current_thread() is self._thread:
+                self._out_queue.put({"kind": "input", "req": req})
+                return self._wait_for_answer()
+            return None
         chooser = self.players.get(req.get("chooser"))
         if chooser and chooser["isAI"]:
             value = self.ai_module(req["chooser"]).decide(self, req)
@@ -306,7 +429,7 @@ class Engine:
             return value
         if threading.current_thread() is self._thread:
             self._out_queue.put({"kind": "input", "req": req})
-            return self._in_queue.get()
+            return self._wait_for_answer()
         # 폴백 (원칙적으로 일어나면 안 됨): 그럴듯한 기본값을 고른다.
         value = self.ai_module(req.get("chooser")).decide(self, req)
         self.answer_log.append({"value": value})
@@ -318,9 +441,11 @@ class Engine:
         data["kind"] = kind
         if data.get("i18n") and not data.get("noLog"):
             self.logmsg(data["i18n"])
+        if self._replay is not None:
+            return  # 재생 중엔 애니메이션 정지 없이 그대로 통과 (빠른 재생)
         if threading.current_thread() is self._thread:
             self._out_queue.put({"kind": "anim", "event": data, "dur": data.get("dur", 0.45)})
-            self._in_queue.get()
+            self._wait_for_answer()
 
     # -------------------------------------------------------------------
     # 위치 헬퍼
@@ -1437,8 +1562,41 @@ class Engine:
         self.control = None
         self.emit("control", {"player": None, "i18n": {"key": "ev.controlSpend", "params": {"p": pi}}})
         if self.players[pi]["isAI"]:
-            plan = self.ai_module(pi).planRearrange(self, pi, compiling_line)
-            self.answer_log.append({"value": plan})
+            if self._replay is not None:
+                if self._replay:
+                    # prompt()를 거치지 않는 별도 경로라 재생 모드를 직접
+                    # 확인해야 한다. answer_log엔 이 결정도 기록돼 있으므로
+                    # 그대로 재생.
+                    plan = self._replay.pop(0)
+                    self.answer_log.append({"value": plan})
+                else:
+                    # 재생이 정확히 이 결정에서 끝남: prompt()와 동일하게
+                    # 진짜로 멈춰서 caller의 답을 기다린다. answer_log는
+                    # 여기서 append하지 않는다 -- caller가 answer()로 답을
+                    # 넘길 때 그쪽에서 이미 기록하므로, 여기서 또 하면
+                    # 중복된다. 이후 계속 이 모드를 유지한다(_sim_paused_mode).
+                    self._replay = None
+                    self._sim_paused_mode = True
+                    req = {"type": "planRearrange", "chooser": pi,
+                           "compilingLine": compiling_line}
+                    if threading.current_thread() is self._thread:
+                        self._out_queue.put({"kind": "input", "req": req})
+                        plan = self._wait_for_answer()
+                    else:
+                        plan = None
+            elif self._sim_paused_mode:
+                # 재생은 이미 예전에 끝났고(이번 턴 이전) 지금은 그 이후의
+                # 하위 결정 -- prompt()와 동일하게 계속 진짜로 멈춘다.
+                req = {"type": "planRearrange", "chooser": pi,
+                       "compilingLine": compiling_line}
+                if threading.current_thread() is self._thread:
+                    self._out_queue.put({"kind": "input", "req": req})
+                    plan = self._wait_for_answer()
+                else:
+                    plan = None
+            else:
+                plan = self.ai_module(pi).planRearrange(self, pi, compiling_line)
+                self.answer_log.append({"value": plan})
             if plan:
                 self.rearrange_protocols(plan["who"], plan["order"])
             return

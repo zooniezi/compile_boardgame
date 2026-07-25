@@ -40,7 +40,7 @@ def play_one(ai_seat1, ai_seat2, protos1, protos2, seed):
     """한 판을 끝까지 두고 승자(1|2|None)를 반환."""
     random.seed(seed)
     e = Engine(protocols1=protos1, protocols2=protos2,
-               ai1=True, ai2=True,
+               ai1=True, ai2=True, seed=seed,
                ai_modules={1: ai_seat1, 2: ai_seat2})
     e.start()
     steps = 0
