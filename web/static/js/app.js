@@ -131,8 +131,10 @@ function currentSelfPi(state) {
 
 function openDiscardModal(pi) {
   if (!lastState) return;
-  const self = currentSelfPi(lastState);
-  if (pi !== self) return; // 실물 규칙과 무관하게, 요청대로 "지금 차례인 사람" 것만 확인 가능
+  // 공식 규칙서: "Face-up cards in the field, the content of any trash, and
+  // the number of cards in a player's hand/deck/trash are all public
+  // information." -- 버림더미는 항상 양쪽 다 공개 정보라 차례와 무관하게
+  // 언제든 열람 가능해야 한다.
   const cards = lastState.players[String(pi)].discard.map((c) => ({ proto: c.proto, value: c.value }));
   showPileModal(`버림더미 — ${pName(pi)}`, cards);
 }
