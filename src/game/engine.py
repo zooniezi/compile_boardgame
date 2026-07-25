@@ -730,7 +730,7 @@ class Engine:
         c = self.pop_deck(pi)
         if not c:
             return None
-        c.face_up = False
+        c.face_up = True
         p["discard"].append(c)
         self.emit("millTop", {"player": pi, "uid": c.uid,
                                "i18n": {"key": "ev.millTop", "params": {
@@ -747,7 +747,7 @@ class Engine:
         if n == 0:
             return 0
         for c in reversed(p["deck"]):
-            c.face_up = False
+            c.face_up = True
             p["discard"].append(c)
         p["deck"] = []
         p["revealedTop"] = None
@@ -783,7 +783,7 @@ class Engine:
         removed = 0
         for c in to_remove:
             p["hand"] = [x for x in p["hand"] if x is not c]
-            c.face_up = False
+            c.face_up = True
             p["discard"].append(c)
             removed += 1
             self.emit("discard", {"player": pi, "n": 1, "uid": c.uid, "dur": MOVE_STAGGER,
@@ -969,7 +969,7 @@ class Engine:
             else:
                 self.place_on_stack(card, d["pi"], d["line"], d["faceUp"])
         elif d["zone"] == "trash":
-            card.face_up = False
+            card.face_up = True
             self.players[card.owner]["discard"].append(card)
         elif d["zone"] == "hand":
             if d.get("owner"):
@@ -1172,7 +1172,7 @@ class Engine:
         if via_compile:
             # 컴파일은 라인 전체를 한 번에 지운다: uncover도, 중간 effect도 없이
             # 곧바로 트래시로.
-            card.face_up = False
+            card.face_up = True
             self.players[card.owner]["discard"].append(card)
             if not silent:
                 self.emit("delete", {"uid": card.uid, "player": pi, "line": line,
@@ -1329,12 +1329,17 @@ class Engine:
 
         e = self.commit(card, {"zone": "field", "pi": to_player, "line": to_line,
                                 "faceUp": card.face_up}, after_land)
+        # 먼저 착지(목적지 스택에 실제로 삽입)부터 끝낸다. 그래야 이 카드가
+        # "원래 자리에서도 빠졌고 목적지에도 아직 없는" 허공 상태에서 원래
+        # 자리의 uncover 연쇄(아래 fire_uncover)가 다른 카드 효과를 재발동시켜도
+        # (예: 영혼2가 드러나 재발동하며 "카드 1장을 뒤집으세요") 그 프롬프트의
+        # 후보 목록에 방금 옮겨진 이 카드가 정상적으로 포함된다.
+        self.land_commit(e)
         if was_top and not (to_player == pi and to_line == line):
             # 컴파일로 지워지는 중인 라인이면 uncover된 카드의 middle을 resolve하면
             # 안 됨 (어차피 삭제될 카드).
             if line != self._compiling_line:
                 self.fire_uncover(pi, line)
-        self.land_commit(e)
         return True
 
     # -------------------------------------------------------------------

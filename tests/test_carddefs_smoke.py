@@ -2,7 +2,10 @@ from src.game.carddefs import get
 from tests.conftest import make_ai, neutral_card
 
 
-def test_smoke_0_plays_facedown_where_facedown_exists(dealt_engine):
+def test_smoke_0_processing_own_line_first_self_covers_and_stops(dealt_engine):
+    """공식 FAQ(생명0과 동일 규칙): 자기 자신이 가려지면 즉시 중단.
+    자기 라인을 먼저 처리하면 그 뒷면 카드가 Smoke_0 자신을 덮으므로,
+    그 시점에서 나머지 라인은 처리하지 않는다."""
     e = dealt_engine
     c = neutral_card(e, "Smoke", 0, 1)
     c.face_up = True
@@ -15,11 +18,33 @@ def test_smoke_0_plays_facedown_where_facedown_exists(dealt_engine):
     e.players[1]["stacks"][2].append(fd)
     # 라인3에는 뒷면 카드 없음 -> 대상 아님
 
-    make_ai(e, 1, [1])  # 라인1(자기 라인), 라인2 중 순서 선택
+    make_ai(e, 1, [1])  # 자기 라인(1)을 먼저 선택 -> 스스로 덮여 중단
     before_deck = len(e.players[1]["deck"])
     c.definition["play"](e, c)
     assert len(e.players[1]["stacks"][1]) == 3
-    assert len(e.players[1]["stacks"][2]) == 2
+    assert len(e.players[1]["stacks"][2]) == 1  # 스스로 덮여 중단 -- 처리 안 됨
+    assert e.players[1]["stacks"][3] == []
+    assert len(e.players[1]["deck"]) == before_deck - 1
+
+
+def test_smoke_0_processing_own_line_last_completes_both_lines(dealt_engine):
+    """반대로 자기 라인을 마지막에 처리하면 중단될 일이 없다."""
+    e = dealt_engine
+    c = neutral_card(e, "Smoke", 0, 1)
+    c.face_up = True
+    c.definition = get("Smoke", 0)
+    fd_own_line = neutral_card(e, "Water", 0, 1)
+    fd_own_line.face_up = False
+    e.players[1]["stacks"][1].extend([fd_own_line, c])
+    fd = neutral_card(e, "Water", 0, 1)
+    fd.face_up = False
+    e.players[1]["stacks"][2].append(fd)
+
+    make_ai(e, 1, [2])  # 라인2를 먼저, 자기 라인(1)은 마지막
+    before_deck = len(e.players[1]["deck"])
+    c.definition["play"](e, c)
+    assert len(e.players[1]["stacks"][1]) == 3
+    assert len(e.players[1]["stacks"][2]) == 2  # 이번엔 정상 처리됨
     assert e.players[1]["stacks"][3] == []
     assert len(e.players[1]["deck"]) == before_deck - 2
 

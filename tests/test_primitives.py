@@ -1,3 +1,6 @@
+from tests.conftest import make_ai
+
+
 def test_delete_card_moves_to_owners_discard(engine):
     e = engine
     c = e.new_card("Water", 3, 1)
@@ -8,7 +11,43 @@ def test_delete_card_moves_to_owners_discard(engine):
     assert ok is True
     assert c in e.players[1]["discard"]
     assert e.players[1]["stacks"][1] == []
-    assert c.face_up is False
+    # 규칙서: "Whenever a card is discarded or deleted, put it face-up in its
+    # owner's trash." -- 버림더미 카드는 항상 공개 정보(앞면 취급)라야 한다.
+    # FAQ 금속6 예시(빛0이 뒤집어 자폭한 금속6을 버림더미의 앞면 값 6으로
+    # 계산)가 이걸 명시적으로 확인해준다.
+    assert c.face_up is True
+
+
+def test_faq_light0_flips_metal6_reads_discard_value_as_face_up(engine):
+    """공식 FAQ 예시 그대로: 빛0이 금속6을 뒤집으려 하면, 금속6의 상단
+    명령("가려지거나 뒤집히려 할 때: 먼저 자기 자신을 제거") 때문에 금속6은
+    뒤집히는 대신 스스로 제거된다. 그래도 빛0은 처음 선택했던 그 금속6의
+    "현재 보이는 면의 가치"를 확인하는데, 버림더미의 카드는 전부 앞면
+    취급이므로 값은 6 그대로다 -> 카드 6장을 뽑는다."""
+    from src.game.carddefs import get
+
+    e = engine
+    light0 = e.new_card("Light", 0, 1)
+    light0.face_up = True
+    light0.definition = get("Light", 0)
+    e.players[1]["stacks"][1].append(light0)
+
+    metal6 = e.new_card("Metal", 6, 1)
+    metal6.face_up = True
+    metal6.definition = get("Metal", 6)
+    e.players[1]["stacks"][2].append(metal6)
+
+    # 리셔플 없이 6장을 뽑을 수 있게 덱을 충분히 채워둔다.
+    for _ in range(10):
+        e.players[1]["deck"].append(e.new_card("Water", 1, 1))
+
+    make_ai(e, 1, [metal6.uid])
+    before = len(e.players[1]["hand"])
+    light0.definition["play"](e, light0)
+
+    assert e.locate(metal6) == (None, None, None)  # 필드 밖(버림더미)으로
+    assert metal6.face_up is True  # 버림더미는 공개 정보 -> 앞면 취급
+    assert len(e.players[1]["hand"]) - before == 6
 
 
 def test_delete_card_fires_uncover_on_card_beneath(engine):
@@ -143,6 +182,35 @@ def test_move_card_shifts_to_new_line_and_uncovers_source():
     assert e.players[1]["stacks"][1] == [bottom]
     assert e.players[1]["stacks"][3] == [moving]
     assert trace == ["source uncovered"]
+
+
+def test_move_card_does_not_leave_the_moved_card_in_limbo_during_source_uncover():
+    """회귀 테스트: 이동으로 드러난 원래 자리의 카드가 그 자리에서 즉시
+    재발동할 때(예: 영혼2가 다시 "카드를 뒤집을 수 있습니다"를 물어봄), 방금
+    옮겨지고 있는 카드가 원래 스택에서도 빠지고 목적지 스택엔 아직 안 들어간
+    "허공" 상태라 cards_in_play()에서 안 보이던 버그. move_card가 착지부터
+    끝낸 뒤 원래 자리의 uncover를 처리해야 한다."""
+    from src.game.engine import Engine
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    seen_location = []
+
+    bottom = e.new_card("Water", 1, 1)
+    bottom.face_up = True
+
+    def on_reveal(g, c):
+        # 이 시점(이동으로 드러나 재발동하는 바로 그 순간)에 moving은 어딘가에
+        # 실제로 존재해야 한다 -- None이면 허공에 뜬 버그가 재현된 것.
+        seen_location.append(g.locate(moving))
+
+    bottom.definition = {"play": on_reveal}
+    moving = e.new_card("Water", 2, 1)
+    moving.face_up = False
+    e.players[1]["stacks"][1].extend([bottom, moving])
+
+    e.move_card(moving, 1, 3)
+
+    assert seen_location == [(1, 3, 0)]  # 목적지에 이미 착지한 상태로 보여야 함
+    assert e.locate(moving) == (1, 3, 0)
 
 
 def test_move_card_onto_existing_stack_uncovers_itself(engine):

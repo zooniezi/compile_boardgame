@@ -125,6 +125,10 @@ def _serialize(e):
             # 이 값을 그대로 써야 한다. 카드 값을 화면에서 단순 합산하면
             # lineValueSelf/lineValueOppDelta 같은 패시브가 누락된다.
             "lineValues": {str(l): e.line_value(pi, l) for l in (1, 2, 3)},
+            # 명료1처럼 "다음에 바뀌기 전까지 공개 유지"되는 덱 맨 위 카드.
+            # 없으면 None.
+            "revealedTop": _card_dict(e.cards_by_uid[p["revealedTop"]])
+                if p.get("revealedTop") and p["revealedTop"] in e.cards_by_uid else None,
         }
     return {
         "phase": e.phase,

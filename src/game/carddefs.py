@@ -186,10 +186,20 @@ def _extra_play(g, pi):
         g.play_card(pi, action["uid"], action["line"], action["faceUp"])
 
 
-def _play_top_face_down_each(g, owner, eligible):
+def _play_top_face_down_each(g, c, eligible):
     """eligible 라인마다 덱 맨 위 카드를 뒷면으로 낸다 (Life_0, Smoke_0).
     ONE 명령: owner가 순서를 고른다. 덱이 부족하면 그 자체가 "어느 라인에
-    줄지" 선택이 된다."""
+    줄지" 선택이 된다.
+
+    공식 FAQ(생명0/물1 항목): "이 과정에서 [카드]가 다른 카드에 의해
+    가려지면, 가운데 명령은 즉시 중단됩니다." -- 이 함수는 g.command()로
+    전체 루프를 하나의 명령으로 묶는데, effect_interrupted()의 covered
+    판정은 "명령 사이(inCommand가 아닐 때)"에만 발동하도록 돼 있어서 command()
+    안에서는 억제된다. 그래서 라인마다 c 자신이 여전히 uncovered인지 직접
+    확인해야 한다 (물1은 command()로 안 감싸서 이 문제가 없음 -- 매 반복마다
+    play_top_face_down이 스스로 effect_interrupted()를 재확인하기 때문)."""
+    owner = c.owner
+
     def body():
         # 라인 잠금은 effect에서 그 라인을 통째로 제외시킨다 (자격 판정 시점에
         # 스냅샷).
@@ -198,6 +208,8 @@ def _play_top_face_down_each(g, owner, eligible):
             g.logmsg({"key": "ev.deckShortPlay", "params": {
                 "p": owner, "n": len(g.players[owner]["deck"]), "lines": len(remaining)}})
         while g.players[owner]["deck"] and remaining:
+            if not g.is_uncovered(c):
+                break  # 도중에 가려짐: 나머지 라인은 처리하지 않음 (FAQ)
             line = remaining[0]
             if len(remaining) > 1:
                 if len(g.players[owner]["deck"]) < len(remaining):
@@ -1119,10 +1131,14 @@ DEFS["Speed_5"] = DISCARD_ONE_DEF
 # LIFE
 # =============================================================================
 def _life_0_play(g, c):
-    # "네가 카드를 가진 각 라인에서" -- Life_0 자신의 라인도 포함(자기 자신을
-    # 덮는 것도 루프를 끊으면 안 됨; playTopFaceDownEach 참고).
+    # "네가 카드를 가진 각 라인에서" -- Life_0 자신의 라인도 포함. 공식 FAQ:
+    # "이 과정에서 생명 0이 다른 카드에 의해 가려지면, 가운데 명령은 즉시
+    # 중단됩니다" -- 이건 자기 자신을 덮는 경우도 예외가 아니다(플레이어가
+    # 처리 순서를 고르므로, 자기 라인을 마지막으로 미루면 3개 다 처리되고
+    # 먼저 처리하면 그 시점에서 끊기는 실제 전략적 선택이 된다). 자세한 중단
+    # 조건은 _play_top_face_down_each 참고.
     eligible = [line for line in (1, 2, 3) if g.players[c.owner]["stacks"][line]]
-    _play_top_face_down_each(g, c.owner, eligible)
+    _play_top_face_down_each(g, c, eligible)
 
 
 def _life_0_finish_top(g, c):
@@ -1725,9 +1741,10 @@ DEFS["Peace_6"] = {"play": lambda g, c: (g.flip_card(c) if len(g.players[c.owner
 # =============================================================================
 def _smoke_0_play(g, c):
     # "뒷면 카드가 있는 각 라인에서" -- Smoke_0 자신의 라인도 뒷면 카드를
-    # 가지면 자격이 있다 (자기 자신을 덮는 첫 플레이도 포함).
+    # 가지면 자격이 있다. 생명0과 동일하게, 자기 자신이 가려지면 즉시
+    # 중단된다(공식 FAQ) -- 자기 라인 처리 순서가 전략적 선택이 됨.
     eligible = [line for line in (1, 2, 3) if g.facedown_in_line(line) > 0]
-    _play_top_face_down_each(g, c.owner, eligible)
+    _play_top_face_down_each(g, c, eligible)
 
 
 def _smoke_1_play(g, c):

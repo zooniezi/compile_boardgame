@@ -350,6 +350,17 @@ button {
   text-align: center;
 }
 
+.deck-box.deck-revealed {
+  border: 1.5px solid var(--card-accent, var(--phosphor));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--card-accent, var(--phosphor)) 50%, transparent);
+}
+
+.deck-box.deck-revealed .deck-revealed-name {
+  color: var(--card-accent, var(--text-hi));
+  font-weight: 700;
+  font-size: 10px;
+}
+
 .deck-box .count-badge, .discard-box .count-badge {
   font-family: var(--font-mono);
   position: absolute;
@@ -401,7 +412,8 @@ button {
   gap: 3px;
   padding: 5px;
   position: relative;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   transition: background .12s, box-shadow .12s;
 }
 
@@ -689,8 +701,9 @@ button {
 .turn-box .turn-control { display: block; margin-top: 4px; font-size: 10px; color: var(--amber); letter-spacing: 1px; }
 
 .log-list {
-  flex: 1 1 0;
-  min-height: 80px;
+  flex: 0 1 200px;
+  max-height: 200px;
+  min-height: 60px;
   overflow-y: auto;
   padding: 10px 14px;
   font-family: var(--font-display);
@@ -706,8 +719,8 @@ button {
 .log-list .log-entry span.p2 { color: var(--amber); }
 
 .card-info-box {
-  flex: 0 0 auto;
-  max-height: 52%;
+  flex: 1 1 auto;
+  min-height: 220px;
   overflow-y: auto;
   padding: 14px 16px;
 }
@@ -1267,6 +1280,7 @@ button {
   border-radius: 8px;
   border: 1.5px solid var(--card-accent, var(--line-hair));
   background: var(--bg-card-back);
+  overflow: hidden;
 }
 
 .codex-card .cc-header {
@@ -1355,6 +1369,16 @@ button {
   grid-template-columns: repeat(3, 1fr);
   gap: 12px;
   align-items: stretch;
+}
+
+.codex-card.showcase-pick {
+  cursor: pointer;
+  transition: transform .12s, box-shadow .12s;
+}
+
+.codex-card.showcase-pick:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 22px rgba(0,0,0,0.5), 0 0 16px var(--phosphor-glow);
 }
 
 /* ==========================================================================

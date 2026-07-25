@@ -160,11 +160,17 @@ function showPileModal(title, cards) {
     grid.appendChild(renderCodexCard(c.proto, c.value, accent));
   });
   $("#pile-modal-close").textContent = "닫기";
+  $("#pile-modal-close").style.visibility = "visible";
+  showcaseOnClose = null;
   $("#pile-modal").classList.remove("hidden");
 }
 
 // 모달이 닫힐 때까지 기다려야 하는 경우(손패 공개 등)를 위한 대기 고리.
 let pileModalResolve = null;
+// showcase(덱/버림더미 등 필드 밖 카드) 선택 프롬프트에서, 닫기 버튼이
+// "선택 안 함"으로 동작해야 하는 경우의 콜백. 카드 클릭으로 이미 답했으면
+// null로 비워서 중복 응답을 막는다.
+let showcaseOnClose = null;
 
 function showPileModalAndWait(title, cards) {
   showPileModal(title, cards);
@@ -179,6 +185,38 @@ function closePileModal() {
     pileModalResolve = null;
     r();
   }
+  if (showcaseOnClose) {
+    const fn = showcaseOnClose;
+    showcaseOnClose = null;
+    fn();
+  }
+}
+
+// 필드 밖(덱/버림더미 등)에서 카드를 고르는 프롬프트 (명료2/3의 "덱에서 낚기" 등).
+// 이 카드들은 보드에 그려지지 않으므로 클릭할 대상이 없다 -- 모달로 직접
+// 후보를 펼쳐서 클릭하면 바로 답이 제출되게 한다.
+function renderShowcasePrompt(state, req, who) {
+  showPromptBar(false);
+  const cards = req.cards || [];
+  $("#pile-modal-title").textContent = tr(req.prompt, req.promptParams) || `${who}: 카드를 선택하세요`;
+  const grid = $("#pile-modal-grid");
+  grid.innerHTML = "";
+  cards.forEach((c) => {
+    const accent = PROTO.colors[c.proto] || "#888";
+    const el = renderCodexCard(c.proto, c.value, accent);
+    el.classList.add("showcase-pick");
+    el.addEventListener("click", () => {
+      showcaseOnClose = null; // 이미 답했으니 닫기 핸들러가 중복 응답하지 않게
+      closePileModal();
+      submitAnswer(c.uid);
+    });
+    grid.appendChild(el);
+  });
+  const optional = !!req.optional;
+  $("#pile-modal-close").textContent = "선택 안 함";
+  $("#pile-modal-close").style.visibility = optional ? "visible" : "hidden";
+  showcaseOnClose = optional ? () => submitAnswer(null) : null;
+  $("#pile-modal").classList.remove("hidden");
 }
 
 $("#deck-p1").addEventListener("click", () => openDeckModal(1));
@@ -523,7 +561,21 @@ function renderTurnBox(state) {
 function renderDeckCols(state) {
   for (const pi of [1, 2]) {
     const p = state.players[String(pi)];
-    $(`#deck-p${pi}`).innerHTML = `덱<div class="count-badge">${p.deckCount}</div>`;
+    const deckEl = $(`#deck-p${pi}`);
+    const rt = p.revealedTop;
+    if (rt) {
+      // 명료1 등: 다음에 바뀌기 전까지 덱 맨 위 카드가 공개 유지된다.
+      const accent = PROTO.colors[rt.proto] || "#888";
+      deckEl.style.setProperty("--card-accent", accent);
+      deckEl.classList.add("deck-revealed");
+      deckEl.innerHTML = `<span class="deck-revealed-name">${protoKo(rt.proto)}</span>`
+        + `<div class="count-badge">${rt.value}</div>`;
+      attachCardInfoHover(deckEl, rt, true);
+    } else {
+      deckEl.classList.remove("deck-revealed");
+      deckEl.style.removeProperty("--card-accent");
+      deckEl.innerHTML = `덱<div class="count-badge">${p.deckCount}</div>`;
+    }
     $(`#discard-p${pi}`).innerHTML = `버림<div class="count-badge">${p.discard.length}</div>`;
   }
 }
@@ -1072,14 +1124,14 @@ const LOG_KO = {
   "ev.rearrange": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 라인${p.a}·${p.b} 교환`,
   "ev.rearrangeFull": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜을 재배치`,
   "ev.swapStacks": (p) => `${pName(p.p)}${josa(p.p)} 라인${p.a}·${p.b} 스택을 통째로 교환`,
-  "ev.compile": (p) => `${pName(p.p)}${josa(p.p)} ${p.proto}(라인${p.line}) 컴파일!`,
-  "ev.recompile": (p) => `${pName(p.p)}${josa(p.p)} ${p.proto}(라인${p.line}) 재컴파일`,
-  "ev.compileFlip": (p) => `${pName(p.p)}의 ${p.proto}(라인${p.line}) 컴파일 완료로 표시`,
+  "ev.compile": (p) => `${pName(p.p)}${josa(p.p)} ${protoKo(p.proto)}(라인${p.line}) 컴파일!`,
+  "ev.recompile": (p) => `${pName(p.p)}${josa(p.p)} ${protoKo(p.proto)}(라인${p.line}) 재컴파일`,
+  "ev.compileFlip": (p) => `${pName(p.p)}의 ${protoKo(p.proto)}(라인${p.line}) 컴파일 완료로 표시`,
   "ev.noCompile": (p) => `${pName(p.opp)}는 이번엔 컴파일 불가`,
   "ev.middleIgnored": (p) => `라인${p.line}에서 Middle 명령 무시됨`,
   "ev.middleFear": (p) => `${pName(p.p)}의 Middle 명령이 상대 효과로 무시됨`,
   "ev.stateNumber": (p) => `${pName(p.p)}${josa(p.p)} 숫자 "${p.n}"을 말함`,
-  "ev.stateProtocol": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 "${p.proto}"를 말함`,
+  "ev.stateProtocol": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 "${protoKo(p.proto)}"를 말함`,
   "ev.deckShortPlay": (p) => `${pName(p.p)}의 덱이 ${p.n}장뿐이라 ${p.lines}개 라인에 다 못 냄`,
   "ev.stalemate": (p) => `턴 상한 도달 -- 무승부 판정: ${pName(p.p)} 승리`,
   "ev.win": (p) => `★ ${pName(p.p)} 승리! ★`,
@@ -1198,8 +1250,12 @@ function renderPrompt(state) {
       renderActionPrompt(state, req, who);
       break;
     case "chooseCard":
-      showPromptBar(true, `${who}: ${tr(req.prompt, req.promptParams) || "카드를 선택하세요"}`,
-        req.optional ? [{ label: "선택 안 함", secondary: true, onClick: () => submitAnswer(null) }] : []);
+      if (req.showcase) {
+        renderShowcasePrompt(state, req, who);
+      } else {
+        showPromptBar(true, `${who}: ${tr(req.prompt, req.promptParams) || "카드를 선택하세요"}`,
+          req.optional ? [{ label: "선택 안 함", secondary: true, onClick: () => submitAnswer(null) }] : []);
+      }
       break;
     case "chooseHandCards":
       renderChooseHandCards(state, req, who);
