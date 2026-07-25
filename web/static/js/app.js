@@ -159,11 +159,26 @@ function showPileModal(title, cards) {
     const accent = PROTO.colors[c.proto] || "#888";
     grid.appendChild(renderCodexCard(c.proto, c.value, accent));
   });
+  $("#pile-modal-close").textContent = "닫기";
   $("#pile-modal").classList.remove("hidden");
+}
+
+// 모달이 닫힐 때까지 기다려야 하는 경우(손패 공개 등)를 위한 대기 고리.
+let pileModalResolve = null;
+
+function showPileModalAndWait(title, cards) {
+  showPileModal(title, cards);
+  $("#pile-modal-close").textContent = "확인";   // 닫아야 게임이 이어짐
+  return new Promise((resolve) => { pileModalResolve = resolve; });
 }
 
 function closePileModal() {
   $("#pile-modal").classList.add("hidden");
+  if (pileModalResolve) {
+    const r = pileModalResolve;
+    pileModalResolve = null;
+    r();
+  }
 }
 
 $("#deck-p1").addEventListener("click", () => openDeckModal(1));
@@ -361,8 +376,17 @@ async function handleState(state, mySeq) {
   }
   if (state.pending.kind === "anim") {
     showPromptBar(false);
-    const dur = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
-    await sleep(dur);
+    const ev = state.pending.event || {};
+    // 손패 공개는 흘러가버리면 놓치므로, 모달로 띄우고 닫을 때까지 진행을 멈춘다.
+    if (ev.kind === "revealHand") {
+      const cards = ((ev.i18n || {}).params || {}).cards || [];
+      if (cards.length) {
+        await showPileModalAndWait(`손패 공개 — ${pName(ev.player)}`, cards);
+      }
+    } else {
+      const dur = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
+      await sleep(dur);
+    }
     const seq = ++requestSeq;
     const res = await fetch(`/api/advance_anim/${gameId}`, { method: "POST" });
     handleState(await res.json(), seq);
@@ -1032,7 +1056,13 @@ const LOG_KO = {
   "ev.reveal": (p) => `${cardLabel(p.card)} 공개`,
   "ev.revealFacedown": (p) => `뒷면 카드 공개: ${cardLabel(p.card)}`,
   "ev.revealDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱을 공개`,
-  "ev.revealHand": (p) => `${pName(p.p)}${josa(p.p)} 손패를 공개 (${(p.cards || []).length}장)`,
+  "ev.revealHand": (p) => {
+    const cards = p.cards || [];
+    if (!cards.length) return `${pName(p.p)}${josa(p.p)} 손패를 공개 (없음)`;
+    // 공개 정보이므로 카드 정체를 그대로 보여준다 (각 카드는 호버/클릭 가능).
+    return `${pName(p.p)}${josa(p.p)} 손패를 공개 (${cards.length}장): `
+      + cards.map(cardLabel).join(", ");
+  },
   "ev.revealTopStay": (p) => `${pName(p.p)}의 덱 맨 위 카드가 공개된 채로 유지: ${cardLabel(p.card)}`,
   "ev.reshuffle": (p) => `${pName(p.p)}${josa(p.p)} 버림더미(${p.n}장)를 덱에 셔플`,
   "ev.shuffleDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱을 셔플`,
