@@ -23,6 +23,7 @@ from flask import Flask, jsonify, render_template, request
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.game.ai_random import RandomAI
+from src.game.ai_heuristic import HeuristicAI
 from src.game.engine import Engine
 from src.game import protocols as Protocols
 from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO, PROTOCOL_TAGLINE, PROTOCOL_VERBS
@@ -210,6 +211,8 @@ def new_game():
     data = request.get_json(force=True) or {}
     mode = data.get("mode", "hotseat")  # "hotseat" | "vs_ai"
     ai_side = data.get("aiSide", 2)
+    # "random"(왕초보) | "heuristic"(초보). 모르는 값이 오면 안전하게 랜덤.
+    ai_difficulty = data.get("aiDifficulty", "random")
     first_player = data.get("firstPlayer", random.choice([1, 2]))
 
     protocols1 = data.get("draftedProtocols", {}).get("1")
@@ -219,11 +222,15 @@ def new_game():
 
     ai1 = mode == "vs_ai" and ai_side == 1
     ai2 = mode == "vs_ai" and ai_side == 2
+
+    def make_ai_module():
+        return HeuristicAI() if ai_difficulty == "heuristic" else RandomAI()
+
     ai_modules = {}
     if ai1:
-        ai_modules[1] = RandomAI()
+        ai_modules[1] = make_ai_module()
     if ai2:
-        ai_modules[2] = RandomAI()
+        ai_modules[2] = make_ai_module()
 
     # AI 시뮬레이션(clone_at_decision 등)이 이 판을 재생하려면 시드가 필요함.
     # 매 판마다 독립적으로 생성 -- 32비트 범위면 random.Random(seed)에 충분.

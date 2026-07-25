@@ -54,10 +54,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let chosenMode = null;
 let chosenDraft = null;   // 명시적으로 고르게 함 (기본 선택 없음)
 let chosenSet = "all";
+let chosenDifficulty = null;   // vs_ai일 때만 필요
 
-// 모드와 프로토콜 방식을 둘 다 골라야 "시작"이 열린다.
+// 모드와 프로토콜 방식을 둘 다 골라야 "시작"이 열린다. vs_ai면 난이도도 필수.
 function refreshStartBtn() {
-  $("#start-btn").disabled = !(chosenMode && chosenDraft);
+  const needsDifficulty = chosenMode === "vs_ai";
+  $("#start-btn").disabled = !(chosenMode && chosenDraft && (!needsDifficulty || chosenDifficulty));
 }
 
 document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
@@ -68,6 +70,16 @@ document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
     // 모드를 고른 뒤에야 나머지 설정이 드러난다 (단계적 노출)
     $("#setup-rest").classList.remove("hidden");
     $("#nick-p2-field").classList.toggle("hidden", chosenMode === "vs_ai");
+    $("#ai-difficulty-block").classList.toggle("hidden", chosenMode !== "vs_ai");
+    refreshStartBtn();
+  });
+});
+
+document.querySelectorAll(".mode-btn[data-difficulty]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn[data-difficulty]").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    chosenDifficulty = btn.dataset.difficulty;
     refreshStartBtn();
   });
 });
@@ -233,6 +245,7 @@ $("#pile-modal").addEventListener("click", (ev) => {
 async function startGame(mode, draftedProtocols) {
   const body = { mode: mode || "hotseat", aiSide: 2 };
   if (draftedProtocols) body.draftedProtocols = draftedProtocols;
+  if (mode === "vs_ai") body.aiDifficulty = chosenDifficulty || "random";
   const res = await fetch("/api/new_game", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
