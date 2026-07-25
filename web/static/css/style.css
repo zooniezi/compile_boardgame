@@ -1280,7 +1280,6 @@ button {
   border-radius: 8px;
   border: 1.5px solid var(--card-accent, var(--line-hair));
   background: var(--bg-card-back);
-  overflow: hidden;
 }
 
 .codex-card .cc-header {
@@ -1292,6 +1291,11 @@ button {
   background: var(--card-accent, #888);
   color: #06070a;
   font-weight: 700;
+  /* 부모의 overflow:hidden으로 자르는 대신 헤더 자신의 위쪽 모서리를 둥글게
+     맞춘다 -- overflow:hidden을 grid 아이템(align-items:stretch)에 걸면
+     일부 브라우저에서 카드 높이 계산이 꼬여 레이아웃이 틀어지는 문제가
+     있었음. */
+  border-radius: 6px 6px 0 0;
 }
 
 .codex-card .cc-header .cc-value { font-family: var(--font-mono); font-size: 18px; }
@@ -1328,6 +1332,10 @@ button {
 }
 .codex-card .cc-band-empty::before { opacity: 0.3; }
 
+.codex-card .cc-band:last-child {
+  border-radius: 0 0 6px 6px;
+}
+
 /* ==========================================================================
    버림더미/덱 열람 모달
    ========================================================================== */
@@ -1353,6 +1361,7 @@ button {
 }
 
 .pile-modal-header {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1363,10 +1372,17 @@ button {
 }
 
 .pile-modal-grid {
+  /* flex:1 1 auto + min-height:0이 핵심 -- 이게 없으면 flex 부모의
+     max-height 제약을 만나 overflow-y:auto가 스크롤로 동작하는 대신,
+     그리드 행(카드 6줄)이 억지로 눌려 찌그러진다 (카드가 많을 때
+     상/중/하단 텍스트가 다 안 보이던 문제). */
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 18px;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: max-content;
   gap: 12px;
   align-items: stretch;
 }
