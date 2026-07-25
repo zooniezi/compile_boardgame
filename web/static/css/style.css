@@ -20,6 +20,14 @@
   font-style: normal;
   font-display: swap;
 }
+/* 첫 화면 COMPILE 워드마크 전용 (글리프가 영문/기호만 있어 로고에만 사용) */
+@font-face {
+  font-family: 'Hacked';
+  src: url('../fonts/Hacked-KerX.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
   --bg-void: #06070a;
@@ -97,20 +105,14 @@ button {
 }
 
 .logo {
-  font-family: var(--font-mono);
-  font-size: 44px;
-  font-weight: 700;
-  letter-spacing: 6px;
+  font-family: 'Hacked', var(--font-mono);
+  font-size: 52px;
+  font-weight: 400;
+  letter-spacing: 4px;
   color: var(--phosphor);
   margin: 0 0 8px;
   text-shadow: 0 0 24px var(--phosphor-glow);
 }
-
-.logo-cursor {
-  animation: blink 1.1s steps(1) infinite;
-}
-
-@keyframes blink { 50% { opacity: 0; } }
 
 .tagline {
   color: var(--text-mid);
@@ -216,11 +218,11 @@ button {
 }
 
 .logo-small {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  letter-spacing: 3px;
+  font-family: 'Hacked', var(--font-mono);
+  font-weight: 400;
+  letter-spacing: 2px;
   color: var(--phosphor);
-  font-size: 13px;
+  font-size: 15px;
 }
 
 .topbar-title {
