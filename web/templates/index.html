@@ -24,6 +24,7 @@
   <div class="setup-card">
     <h1 class="setup-title">게임 설정</h1>
 
+    <p class="setup-step-label">누구와 플레이할까요?</p>
     <div class="mode-select">
       <button class="mode-btn" data-mode="hotseat">
         <span class="mode-title">HOTSEAT</span>
@@ -35,47 +36,49 @@
       </button>
     </div>
 
-    <div class="nickname-row">
-      <div class="nickname-field">
-        <label for="nick-p1">플레이어1 닉네임</label>
-        <input type="text" id="nick-p1" maxlength="12" placeholder="플레이어1">
+    <div id="setup-rest" class="hidden">
+      <div class="nickname-row">
+        <div class="nickname-field">
+          <label for="nick-p1">플레이어1 닉네임</label>
+          <input type="text" id="nick-p1" maxlength="12" placeholder="플레이어1">
+        </div>
+        <div class="nickname-field" id="nick-p2-field">
+          <label for="nick-p2">플레이어2 닉네임</label>
+          <input type="text" id="nick-p2" maxlength="12" placeholder="플레이어2">
+        </div>
       </div>
-      <div class="nickname-field" id="nick-p2-field">
-        <label for="nick-p2">플레이어2 닉네임</label>
-        <input type="text" id="nick-p2" maxlength="12" placeholder="플레이어2">
+
+      <p class="setup-step-label">프로토콜은 어떻게 정할까요?</p>
+      <div class="mode-select">
+        <button class="mode-btn" data-draft="random">
+          <span class="mode-title">무작위 배정</span>
+          <span class="mode-desc">바로 3+3 무작위 배정</span>
+        </button>
+        <button class="mode-btn" data-draft="draft">
+          <span class="mode-title">밴픽</span>
+          <span class="mode-desc">번갈아 픽/밴으로 직접 구성</span>
+        </button>
       </div>
+
+      <div class="mode-select set-select hidden" id="set-select">
+        <button class="mode-btn small" data-set="main1">
+          <span class="mode-title">MAIN 1 + AUX 1</span>
+        </button>
+        <button class="mode-btn small" data-set="main2">
+          <span class="mode-title">MAIN 2 + AUX 2</span>
+        </button>
+        <button class="mode-btn small" data-set="all">
+          <span class="mode-title">전체</span>
+        </button>
+      </div>
+
+      <label class="toggle-row">
+        <input type="checkbox" id="confirm-play-toggle" checked>
+        <span>카드 낼 때 확인창 보기</span>
+      </label>
+
+      <button id="start-btn" class="start-btn" disabled>시작</button>
     </div>
-
-    <p class="tagline" style="margin-top:24px">프로토콜은 어떻게 정할까요?</p>
-    <div class="mode-select">
-      <button class="mode-btn" data-draft="random">
-        <span class="mode-title">무작위 배정</span>
-        <span class="mode-desc">바로 3+3 무작위 배정</span>
-      </button>
-      <button class="mode-btn" data-draft="draft">
-        <span class="mode-title">밴픽</span>
-        <span class="mode-desc">번갈아 픽/밴으로 직접 구성</span>
-      </button>
-    </div>
-
-    <div class="mode-select set-select hidden" id="set-select">
-      <button class="mode-btn small" data-set="main1">
-        <span class="mode-title">MAIN 1 + AUX 1</span>
-      </button>
-      <button class="mode-btn small" data-set="main2">
-        <span class="mode-title">MAIN 2 + AUX 2</span>
-      </button>
-      <button class="mode-btn small" data-set="all">
-        <span class="mode-title">전체</span>
-      </button>
-    </div>
-
-    <button id="start-btn" class="start-btn" disabled>시작</button>
-
-    <label class="toggle-row">
-      <input type="checkbox" id="confirm-play-toggle" checked>
-      <span>카드 낼 때 확인창 보기</span>
-    </label>
 
     <button id="back-to-landing-btn" class="icon-btn codex-btn-full">← 뒤로</button>
   </div>
@@ -87,7 +90,12 @@
     <span class="topbar-title">Compile Codex</span>
   </header>
 
-  <div class="codex-body">
+  <div class="codex-tabs">
+    <button class="codex-tab selected" data-ctab="codex">카드 구성</button>
+    <button class="codex-tab" data-ctab="rules">규칙</button>
+  </div>
+
+  <div class="codex-body" id="codex-pane-codex">
     <aside class="codex-sidebar">
       <div class="codex-set-select" id="codex-set-select">
         <button class="mode-btn small selected" data-cset="main1">MAIN 1 + AUX 1</button>
@@ -100,6 +108,10 @@
       <div class="codex-banner" id="codex-banner"></div>
       <div class="codex-cards" id="codex-cards"></div>
     </main>
+  </div>
+
+  <div class="rules-body hidden" id="codex-pane-rules">
+    <div class="rules-list" id="rules-list"></div>
   </div>
 </div>
 

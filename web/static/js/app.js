@@ -52,16 +52,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // 셋업 화면
 // ----------------------------------------------------------------------------
 let chosenMode = null;
-let chosenDraft = "random";
+let chosenDraft = null;   // 명시적으로 고르게 함 (기본 선택 없음)
 let chosenSet = "all";
+
+// 모드와 프로토콜 방식을 둘 다 골라야 "시작"이 열린다.
+function refreshStartBtn() {
+  $("#start-btn").disabled = !(chosenMode && chosenDraft);
+}
 
 document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".mode-btn[data-mode]").forEach((b) => b.classList.remove("selected"));
     btn.classList.add("selected");
     chosenMode = btn.dataset.mode;
-    $("#start-btn").disabled = false;
+    // 모드를 고른 뒤에야 나머지 설정이 드러난다 (단계적 노출)
+    $("#setup-rest").classList.remove("hidden");
     $("#nick-p2-field").classList.toggle("hidden", chosenMode === "vs_ai");
+    refreshStartBtn();
   });
 });
 
@@ -71,6 +78,7 @@ document.querySelectorAll(".mode-btn[data-draft]").forEach((btn) => {
     btn.classList.add("selected");
     chosenDraft = btn.dataset.draft;
     $("#set-select").classList.toggle("hidden", chosenDraft !== "draft");
+    refreshStartBtn();
   });
 });
 document.querySelectorAll(".mode-btn[data-set]").forEach((btn) => {
@@ -80,8 +88,7 @@ document.querySelectorAll(".mode-btn[data-set]").forEach((btn) => {
     chosenSet = btn.dataset.set;
   });
 });
-// 기본값을 시각적으로도 선택 표시
-document.querySelector('.mode-btn[data-draft="random"]').classList.add("selected");
+// 세트는 밴픽을 골랐을 때만 보이므로 기본값(전체)을 미리 표시해둬도 어색하지 않다.
 document.querySelector('.mode-btn[data-set="all"]').classList.add("selected");
 
 $("#goto-play-setup-btn").addEventListener("click", () => {
@@ -1348,9 +1355,123 @@ function selectFirstCodexProto() {
   }
 }
 
+// ----------------------------------------------------------------------------
+// 규칙 탭
+// ----------------------------------------------------------------------------
+// 내용은 엔진 실제 동작 기준 (rules.py 상수, engine.run_turn/compilable_lines/
+// check_control/do_compile/refresh 확인 후 작성).
+const RULES = [
+  {
+    title: "목표",
+    accent: "#3dffa0",
+    body: `<p>가장 먼저 <span class="rule-term">프로토콜 3개를 모두 컴파일</span>하면 승리합니다.</p>
+      <p>자신의 턴에 어떤 라인의 총 값이 <span class="rule-term">10 이상</span>이고,
+      그 라인에서 상대보다 값이 <span class="rule-term">높으면</span> 그 프로토콜을 컴파일합니다.</p>`,
+  },
+  {
+    title: "필드",
+    accent: "#a78bfa",
+    body: `<p>라인은 3개입니다. 각 플레이어는 각 라인의 끝에 자신의 프로토콜을 하나씩 둡니다.</p>
+      <p>카드는 자신의 쪽에만 쌓이며, 이 카드 더미를 <span class="rule-term">스택</span>이라고 합니다.
+      마지막에 낸 카드가 맨 위에 <span class="rule-term">드러난</span> 채로 남고,
+      그 아래 카드들은 <span class="rule-term">가려집니다</span>.</p>`,
+  },
+  {
+    title: "턴 진행",
+    accent: "#ff5c72",
+    body: `<ol>
+        <li><span class="rule-term">시작</span> — '시작:' 명령을 처리합니다.</li>
+        <li><span class="rule-term">제어 확인</span> — 2개 이상의 라인에서 이기고 있으면 제어 컴포넌트를 가져옵니다.</li>
+        <li><span class="rule-term">컴파일 확인</span> — 조건을 만족하는 라인이 있으면 <b>반드시</b> 컴파일합니다 (그 턴의 유일한 행동).</li>
+        <li><span class="rule-term">행동</span> — 카드 1장을 플레이하거나 리프레시합니다.</li>
+        <li><span class="rule-term">캐시 정리</span> — 손패가 5장을 초과하면 5장이 될 때까지 버립니다.</li>
+        <li><span class="rule-term">종료</span> — '종료:' 명령을 처리합니다.</li>
+      </ol>`,
+  },
+  {
+    title: "카드 플레이",
+    accent: "#7fb8ff",
+    body: `<p><span class="rule-term">앞면</span>: 프로토콜이 일치하는 라인에만 낼 수 있고(예외를 주는 카드가 있으면 그에 따름),
+      카드의 값을 더하며 중단 명령이 발동합니다.</p>
+      <p><span class="rule-term">뒷면</span>: 어느 라인에나 낼 수 있고 값은 항상 <span class="rule-term">2</span>이며 효과가 없습니다.</p>
+      <p>다른 카드 위에 내면 아래 카드를 덮어 그 명령을 비활성화합니다 (상단 명령은 예외 — 아래 참고).</p>`,
+  },
+  {
+    title: "리프레시",
+    accent: "#ffb454",
+    body: `<p>카드를 내는 대신, 손패가 <span class="rule-term">5장이 될 때까지</span> 카드를 뽑습니다.</p>
+      <p>손패를 버리지는 않습니다. 낼 카드가 없을 때의 선택지이기도 합니다.</p>`,
+  },
+  {
+    title: "컴파일",
+    accent: "#3dffa0",
+    body: `<p>조건(값 10 이상 + 그 라인에서 우세)을 만족하면 <span class="rule-term">의무적으로</span> 컴파일합니다.</p>
+      <p>컴파일하면 그 라인의 <span class="rule-term">양쪽 카드가 모두 제거</span>되고,
+      자신의 프로토콜이 컴파일 완료 면으로 뒤집힙니다.</p>
+      <p>이미 컴파일한 프로토콜을 다시 컴파일할 수도 있습니다. 이 경우 새로 완료되는 것은 없고 라인만 비워집니다.</p>`,
+  },
+  {
+    title: "제어 컴포넌트",
+    accent: "#a78bfa",
+    body: `<p>턴 시작 시 <span class="rule-term">2개 이상의 라인</span>에서 이기고 있으면 제어 컴포넌트를 가져옵니다.</p>
+      <p>컴파일하거나 리프레시할 때 제어 컴포넌트를 <span class="rule-term">소비</span>해서,
+      한 플레이어의 프로토콜 순서를 재배열할 수 있습니다. 자신의 것도, 상대의 것도 대상이 될 수 있습니다.</p>`,
+  },
+  {
+    title: "카드의 세 영역",
+    accent: "#7fb8ff",
+    body: `<p><span class="rule-term">상단</span> — 지속 효과. 카드가 <b>가려져 있어도</b> 계속 작동합니다.</p>
+      <p><span class="rule-term">중단</span> — 즉시 효과. 카드를 앞면으로 내거나, 뒤집거나, 위 카드가 사라져 드러날 때 발동합니다.</p>
+      <p><span class="rule-term">하단</span> — 보조 효과. '시작:' / '종료:' 같은 타이밍 명령이며, 드러나 있을 때만 작동합니다.</p>`,
+  },
+  {
+    title: "주요 용어",
+    accent: "#ff8a9b",
+    body: `<ul>
+        <li><span class="rule-term">제거</span> — 카드를 버림더미로 보냅니다.</li>
+        <li><span class="rule-term">반환</span> — 카드를 소유자의 손패로 되돌립니다.</li>
+        <li><span class="rule-term">뒤집기</span> — 앞면↔뒷면을 바꿉니다. 앞면이 되면 중단 명령이 발동합니다.</li>
+        <li><span class="rule-term">이동</span> — 카드를 같은 소유자의 다른 라인으로 옮깁니다.</li>
+        <li><span class="rule-term">드러난 / 가려진</span> — 스택 맨 위 카드가 드러난 카드, 그 아래가 가려진 카드입니다.</li>
+      </ul>
+      <p class="rule-note">뒷면 카드는 값이 2로 취급되며, 자신의 뒷면 카드는 언제든 확인할 수 있습니다.</p>`,
+  },
+];
+
+function renderRules() {
+  const el = $("#rules-list");
+  if (el.dataset.rendered) return;   // 정적 내용이라 한 번만 그림
+  el.innerHTML = "";
+  RULES.forEach((r) => {
+    const card = document.createElement("div");
+    card.className = "rule-card";
+    card.style.setProperty("--rule-accent", r.accent);
+    card.innerHTML = `<h3>${r.title}</h3>${r.body}`;
+    el.appendChild(card);
+  });
+  el.dataset.rendered = "1";
+}
+
+document.querySelectorAll(".codex-tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".codex-tab").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    const tab = btn.dataset.ctab;
+    $("#codex-pane-codex").classList.toggle("hidden", tab !== "codex");
+    $("#codex-pane-rules").classList.toggle("hidden", tab !== "rules");
+    if (tab === "rules") renderRules();
+  });
+});
+
 function openCodex() {
   $("#setup-screen").classList.add("hidden");
   $("#codex-screen").classList.remove("hidden");
+  // 항상 첫 탭(도감)으로 초기화
+  document.querySelectorAll(".codex-tab").forEach((b) => {
+    b.classList.toggle("selected", b.dataset.ctab === "codex");
+  });
+  $("#codex-pane-codex").classList.remove("hidden");
+  $("#codex-pane-rules").classList.add("hidden");
   renderCodexList();
   selectFirstCodexProto();
 }
