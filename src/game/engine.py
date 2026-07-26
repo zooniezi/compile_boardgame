@@ -847,6 +847,19 @@ class Engine:
         self.fire_reactive(to_pi, "afterDraw")
         return card
 
+    def current_source_card(self):
+        """지금 resolve 중인 카드 효과가 있으면 그 카드를(없으면 None)
+        반환한다. 뽑기/버리기 로그에 "무엇 때문에 그랬는지" 붙이는 용도."""
+        if not self._card_stack:
+            return None
+        return self._card_stack[-1]["card"]
+
+    def _source_param(self):
+        c = self.current_source_card()
+        if c is None:
+            return None
+        return {"uid": c.uid, "proto": c.proto, "value": c.value}
+
     def mill_top(self, pi):
         """pi의 덱 맨 위 카드를 버림더미로 ("mill")."""
         if self.effect_interrupted():
@@ -859,7 +872,8 @@ class Engine:
         p["discard"].append(c)
         self.emit("millTop", {"player": pi, "uid": c.uid,
                                "i18n": {"key": "ev.millTop", "params": {
-                                   "p": pi, "card": {"uid": c.uid, "proto": c.proto, "value": c.value}}}})
+                                   "p": pi, "card": {"uid": c.uid, "proto": c.proto, "value": c.value},
+                                   "source": self._source_param()}}})
         self.fire_reactive(pi, "afterDiscard")
         return c
 
@@ -877,7 +891,8 @@ class Engine:
         p["deck"] = []
         p["revealedTop"] = None
         self.emit("discardDeck", {"player": pi, "n": n, "dur": 0.6,
-                                   "i18n": {"key": "ev.discardDeck", "params": {"p": pi, "n": n}}})
+                                   "i18n": {"key": "ev.discardDeck", "params": {
+                                       "p": pi, "n": n, "source": self._source_param()}}})
         self.fire_reactive(pi, "afterDiscard")
         return n
 
@@ -893,7 +908,8 @@ class Engine:
                 break
             got += 1
             self.emit("draw", {"player": pi, "n": 1, "dur": MOVE_STAGGER,
-                                "i18n": ({"key": "ev.draw", "params": {"p": pi, "n": n}}
+                                "i18n": ({"key": "ev.draw", "params": {
+                                    "p": pi, "n": n, "source": self._source_param()}}
                                          if got == 1 else None)})
         if got > 0:
             self.fire_reactive(pi, "afterDraw")
@@ -913,7 +929,8 @@ class Engine:
             removed += 1
             self.emit("discard", {"player": pi, "n": 1, "uid": c.uid, "dur": MOVE_STAGGER,
                                    "i18n": {"key": "ev.discardCard", "params": {
-                                       "p": pi, "card": {"uid": c.uid, "proto": c.proto, "value": c.value}}}})
+                                       "p": pi, "card": {"uid": c.uid, "proto": c.proto, "value": c.value},
+                                       "source": self._source_param()}}})
         if removed > 0 and not (opts and opts.get("silent")):
             self.fire_reactive(pi, "afterDiscard")
         return removed

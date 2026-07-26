@@ -558,7 +558,7 @@ def _spirit_1_start(g, c):
 def _spirit_3_after_draw(g, c, actor, *_):
     if actor != c.owner:
         return
-    if _ask(g, c.owner, "정신_3을 이동할까요?", "move"):
+    if _ask(g, c.owner, "이 카드를 이동할까요?", "move"):
         _, line, _ = g.locate(c)
         dests = [l for l in (1, 2, 3) if l != line]
         dest = g.choose_line_from(c.owner, dests,

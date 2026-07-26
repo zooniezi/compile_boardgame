@@ -62,6 +62,19 @@
         </div>
       </div>
 
+      <p class="setup-step-label">선공은 누구로 할까요?</p>
+      <div class="mode-select three">
+        <button class="mode-btn small" data-first="1">
+          <span class="mode-title" id="first-p1-label">플레이어1</span>
+        </button>
+        <button class="mode-btn small" data-first="2">
+          <span class="mode-title" id="first-p2-label">플레이어2</span>
+        </button>
+        <button class="mode-btn small selected" data-first="random">
+          <span class="mode-title">무작위</span>
+        </button>
+      </div>
+
       <p class="setup-step-label">프로토콜은 어떻게 정할까요?</p>
       <div class="mode-select">
         <button class="mode-btn" data-draft="random">
@@ -133,7 +146,10 @@
   <div class="draft-header">
     <h1 class="draft-title">프로토콜 선택</h1>
     <div class="draft-steps" id="draft-steps"></div>
-    <div class="draft-subtitle" id="draft-subtitle"></div>
+    <div class="draft-subtitle-row">
+      <div class="draft-subtitle" id="draft-subtitle"></div>
+      <button id="draft-randomize-btn" class="mode-btn small hidden">🎲 AI 몫 무작위로 정하기</button>
+    </div>
   </div>
 
   <div class="draft-body">

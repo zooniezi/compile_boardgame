@@ -177,7 +177,6 @@ def draft_new():
     draft_id = uuid.uuid4().hex[:8]
     entry = {"draft": d, "mode": mode, "lock": threading.Lock()}
     DRAFTS[draft_id] = entry
-    _auto_resolve_ai_draft(entry)
     return jsonify({"draftId": draft_id, "state": _serialize_draft(entry)})
 
 
@@ -202,6 +201,18 @@ def draft_pick(draft_id):
         ok, err = d.apply(player, proto_id)
         if not ok:
             return jsonify({"error": err, **_serialize_draft(entry)}), 400
+    return jsonify(_serialize_draft(entry))
+
+
+@app.route("/api/draft/randomize/<draft_id>", methods=["POST"])
+def draft_randomize(draft_id):
+    """vs_ai 밴픽에서 'AI가 쓸 프로토콜을 무작위로 정하기' 버튼용.
+    지금 남은 AI(플레이어2) 몫의 픽을 전부 무작위(티어 가중치)로 채운다.
+    플레이어1의 몫에는 영향 없음 -- 지금 차례가 플레이어2일 때만 채워짐."""
+    entry = DRAFTS.get(draft_id)
+    if not entry:
+        return jsonify({"error": "밴픽 세션을 찾을 수 없어요"}), 404
+    with entry["lock"]:
         _auto_resolve_ai_draft(entry)
     return jsonify(_serialize_draft(entry))
 

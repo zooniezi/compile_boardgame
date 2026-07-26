@@ -13,6 +13,12 @@ let lastState = null;
 let armedUid = null;         // "action" 진행 중 클릭으로 고른 손 카드
 let dragCtx = null;          // 드래그 중인 손 카드: {uid}
 let rearrangeOrder = null;
+// "확정"을 누르는 순간 세운다 -- 이미 미리보기로 정확한 위치까지 슬라이드해서
+// 보여준 뒤라, 서버가 그 확정을 반영해 다시 보내는 "rearrange" 애니메이션까지
+// 또 재생하면 "홱 젖혀졌다가 다시 슬라이드"처럼 어색해 보인다. 미리보기 없이
+// 갑자기 일어나는 재배치(제어권 AI 재배치, Chaos_1의 상대 강제 재배치 등)는
+// 이 플래그가 안 서있으므로 평소대로 애니메이션된다.
+let skipNextRearrangeAnim = false;
 let rearrangeFirstPick = null;
 const handOrders = {};       // pi -> [uid, ...] 사용자가 정한 손패 표시 순서
 
@@ -55,6 +61,7 @@ let chosenMode = null;
 let chosenDraft = null;   // 명시적으로 고르게 함 (기본 선택 없음)
 let chosenSet = "all";
 let chosenDifficulty = null;   // vs_ai일 때만 필요
+let chosenFirst = "random";    // 선공 -- 기본값은 무작위 (이미 선택된 채로 시작)
 
 // 모드와 프로토콜 방식을 둘 다 골라야 "시작"이 열린다. vs_ai면 난이도도 필수.
 function refreshStartBtn() {
@@ -71,7 +78,17 @@ document.querySelectorAll(".mode-btn[data-mode]").forEach((btn) => {
     $("#setup-rest").classList.remove("hidden");
     $("#nick-p2-field").classList.toggle("hidden", chosenMode === "vs_ai");
     $("#ai-difficulty-block").classList.toggle("hidden", chosenMode !== "vs_ai");
+    // vs_ai면 "플레이어2 선공" 버튼 라벨을 "AI"로 바꿔 헷갈리지 않게 함
+    $("#first-p2-label").textContent = chosenMode === "vs_ai" ? "AI" : "플레이어2";
     refreshStartBtn();
+  });
+});
+
+document.querySelectorAll(".mode-btn[data-first]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".mode-btn[data-first]").forEach((b) => b.classList.remove("selected"));
+    btn.classList.add("selected");
+    chosenFirst = btn.dataset.first;
   });
 });
 
@@ -246,6 +263,7 @@ async function startGame(mode, draftedProtocols) {
   const body = { mode: mode || "hotseat", aiSide: 2 };
   if (draftedProtocols) body.draftedProtocols = draftedProtocols;
   if (mode === "vs_ai") body.aiDifficulty = chosenDifficulty || "random";
+  if (chosenFirst === "1" || chosenFirst === "2") body.firstPlayer = Number(chosenFirst);
   const res = await fetch("/api/new_game", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -309,17 +327,31 @@ async function draftPick(player, protoId) {
   renderDraft(data);
 }
 
+$("#draft-randomize-btn").addEventListener("click", async () => {
+  const res = await fetch(`/api/draft/randomize/${draftId}`, { method: "POST" });
+  const data = await res.json();
+  renderDraft(data);
+});
+
 function renderDraft(state) {
   const cur = state.current;
   const stepsMeta = DRAFT_STEPS_META[state.mode] || DRAFT_STEPS_META.hotseat;
   const doneCount = Object.keys(state.owner).length;
   renderDraftSteps(stepsMeta, doneCount);
 
+  // vs_ai에서 지금이 "AI 몫"(플레이어2) 차례면: 사람이 직접 골라줘도 되고,
+  // 무작위 버튼으로 AI 티어 가중치 랜덤에 맡겨도 된다.
+  const isAiTurn = state.mode === "vs_ai" && !!cur && cur.player === 2;
+  $("#draft-randomize-btn").classList.toggle("hidden", !isAiTurn);
+
   const subtitle = $("#draft-subtitle");
   if (cur) {
     const actLabel = cur.action === "ban"
       ? `<span class="act-ban">${cur.remaining}개 밴</span>` : `<span class="act-pick">${cur.remaining}개 선택</span>`;
-    subtitle.innerHTML = `<span class="who">${pName(cur.player)}</span> 차례 · ${actLabel}`;
+    const who = isAiTurn
+      ? "AI가 사용할 프로토콜을 골라주세요"
+      : `<span class="who">${pName(cur.player)}</span> 차례`;
+    subtitle.innerHTML = `${who} · ${actLabel}`;
   } else {
     subtitle.textContent = "";
   }
@@ -436,6 +468,20 @@ async function handleState(state, mySeq) {
       if (cards.length) {
         await showPileModalAndWait(`손패 공개 — ${pName(ev.player)}`, cards);
       }
+    } else if (ev.kind === "rearrange") {
+      if (skipNextRearrangeAnim) {
+        // 이미 미리보기로 슬라이드해서 보여준 확정 -- 다시 재생하면 어색하니
+        // 로그만 남기고(emit 시점에 이미 logmsg됨) 애니메이션은 생략, 대기도 짧게.
+        skipNextRearrangeAnim = false;
+        await sleep(120);
+      } else {
+        animateProtocolSwap(ev.player, ev.moves);
+        const dur = Math.max(500, (state.pending.dur || 0.3) * 1000);
+        await sleep(dur);
+      }
+    } else if (ev.kind === "compileStart" || ev.kind === "compileFlip") {
+      animateCompileFill(ev.player, ev.line);
+      await sleep(950);
     } else {
       const dur = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
       await sleep(dur);
@@ -657,6 +703,50 @@ function renderStack(zoneEl, cards, state) {
   });
 }
 
+// 프로토콜 재배치(swap_protocols/rearrange_protocols가 보내는 "rearrange"
+// 이벤트, moves: [{from, to, proto, compiled}, ...])를 실제로 라인 사이를
+// 슬라이드하는 것처럼 보이게 한다. render(state)가 이미 새(재배치 후) 값으로
+// 다시 그려둔 뒤이므로, "지금 to 라인에 있는 카드가 from 라인 자리에서
+// 시작한 것처럼" 보이게 역방향 오프셋을 주고 원위치로 트랜지션한다(FLIP 기법).
+// 컴파일 완료 순간, 이미 완료 상태로 그려진 pill 위에 잠깐 ".compiling"을
+// 얹어서 빗금+채움 예고 효과를 보여준다. 이 시간이 지나면 클래스를 떼고,
+// 원래(.compiled) 단색 스타일이 자연스럽게 남는다.
+function animateCompileFill(playerPi, line) {
+  const pill = document.querySelector(`.proto-pill[data-pi="${playerPi}"][data-line="${line}"]`);
+  if (!pill) return;
+  pill.classList.add("compiling");
+  setTimeout(() => pill.classList.remove("compiling"), 950);
+}
+
+function animateProtocolSwap(playerPi, moves) {
+  if (!moves || !moves.length) return;
+  moves.forEach((mv) => {
+    const fromCol = document.querySelector(`.line-col[data-line="${mv.from}"]`);
+    const toPill = document.querySelector(
+      `.proto-pill[data-pi="${playerPi}"][data-line="${mv.to}"]`
+    );
+    if (!fromCol || !toPill) return;
+    const dx = fromCol.getBoundingClientRect().left - toPill.getBoundingClientRect().left;
+    if (!dx) return;
+    toPill.style.transition = "none";
+    toPill.style.transform = `translateX(${dx}px)`;
+    toPill.style.zIndex = "5";
+    toPill.style.boxShadow = "0 0 16px var(--phosphor-glow)";
+    void toPill.offsetWidth; // 강제 리플로우 -- 위 대입이 실제로 적용된 뒤 트랜지션 시작
+    requestAnimationFrame(() => {
+      toPill.style.transition = "transform .45s cubic-bezier(.22,.8,.28,1), box-shadow .45s";
+      toPill.style.transform = "translateX(0)";
+      toPill.style.boxShadow = "none";
+    });
+    setTimeout(() => {
+      toPill.style.transition = "";
+      toPill.style.transform = "";
+      toPill.style.zIndex = "";
+      toPill.style.boxShadow = "";
+    }, 480);
+  });
+}
+
 function protoPill(state, pi, line, rearrangeReq) {
   const p = state.players[String(pi)];
   const compiled = p.compiled[String(line)];
@@ -670,6 +760,8 @@ function protoPill(state, pi, line, rearrangeReq) {
   }
   const el = document.createElement("div");
   el.className = "proto-pill" + (compiled ? " compiled" : "");
+  el.dataset.pi = String(pi);
+  el.dataset.line = String(line);
   const accent = PROTO.colors[proto] || "";
   el.style.setProperty("--proto-accent", accent);
 
@@ -688,15 +780,16 @@ function protoPill(state, pi, line, rearrangeReq) {
     if (rearrangeFirstPick === line) el.classList.add("rearrange-picked");
     el.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      handleRearrangeSlotClick(line);
+      handleRearrangeSlotClick(line, pi);
     });
   }
   return el;
 }
 
 // 필드에서 라인(슬롯) 두 개를 순서대로 클릭해서 프로토콜을 교환한다.
-// 원하는 만큼 반복해서 여러 번 교환할 수 있다.
-function handleRearrangeSlotClick(slot) {
+// 원하는 만큼 반복해서 여러 번 교환할 수 있다. (아직 서버에 확정 전인
+// 로컬 미리보기 상태 -- confirmRearrange를 눌러야 실제로 적용된다.)
+function handleRearrangeSlotClick(slot, targetPi) {
   if (!rearrangeOrder) rearrangeOrder = [1, 2, 3];
   if (rearrangeFirstPick === null) {
     rearrangeFirstPick = slot;
@@ -706,6 +799,14 @@ function handleRearrangeSlotClick(slot) {
     const a = rearrangeFirstPick - 1, b = slot - 1;
     [rearrangeOrder[a], rearrangeOrder[b]] = [rearrangeOrder[b], rearrangeOrder[a]];
     rearrangeFirstPick = null;
+    render(lastState);
+    renderPrompt(lastState);
+    // 미리보기 단계에서도 실제 재배치와 똑같이 슬라이드로 보여준다.
+    animateProtocolSwap(targetPi, [
+      { from: b + 1, to: a + 1 },
+      { from: a + 1, to: b + 1 },
+    ]);
+    return;
   }
   render(lastState);
   renderPrompt(lastState);
@@ -1096,14 +1197,21 @@ function cardLabel(card) {
   return `<span class="log-card" data-proto="${card.proto}" data-value="${card.value}">${protoKo(card.proto)}${card.value}</span>`;
 }
 
+// 뽑기/버리기가 어떤 카드의 효과 때문에 일어났는지 로그 끝에 덧붙인다.
+// source가 없으면(턴 시작 리프레시 등 카드 효과가 아닌 경우) 아무것도 안 붙임.
+function sourceSuffix(source) {
+  if (!source) return "";
+  return ` (${cardLabel(source)} 효과)`;
+}
+
 const LOG_KO = {
   "ev.gameStart": () => "게임 시작",
   "ev.turnStart": (p) => `— 턴 ${p.n} · ${pName(p.p)} —`,
-  "ev.draw": (p) => `${pName(p.p)}${josa(p.p)} 카드 ${p.n}장을 뽑음`,
+  "ev.draw": (p) => `${pName(p.p)}${josa(p.p)} 카드 ${p.n}장을 뽑음${sourceSuffix(p.source)}`,
   "ev.drawFromDeck": (p) => `${pName(p.p)}${josa(p.p)} ${pName(p.opp)}의 덱에서 카드를 가져옴`,
   "ev.refresh": (p) => `${pName(p.p)}${josa(p.p)} 리프레시합니다`,
-  "ev.discardCard": (p) => `${pName(p.p)}${josa(p.p)} ${cardLabel(p.card)} 버림`,
-  "ev.discardDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱 전체(${p.n}장)를 버림`,
+  "ev.discardCard": (p) => `${pName(p.p)}${josa(p.p)} ${cardLabel(p.card)} 버림${sourceSuffix(p.source)}`,
+  "ev.discardDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱 전체(${p.n}장)를 버림${sourceSuffix(p.source)}`,
   "ev.discardToOpp": (p) => `${pName(p.p)}${josa(p.p)} 카드를 ${pName(p.opp)}의 버림더미로 보냄`,
   "ev.give": (p) => `${pName(p.from)}${josa(p.from)} ${pName(p.to)}에게 카드를 줌`,
   "ev.take": (p) => `${pName(p.to)}${josa(p.to)} ${pName(p.from)}의 카드를 가져옴`,
@@ -1133,7 +1241,7 @@ const LOG_KO = {
   "ev.revealTopStay": (p) => `${pName(p.p)}의 덱 맨 위 카드가 공개된 채로 유지: ${cardLabel(p.card)}`,
   "ev.reshuffle": (p) => `${pName(p.p)}${josa(p.p)} 버림더미(${p.n}장)를 덱에 셔플`,
   "ev.shuffleDeck": (p) => `${pName(p.p)}${josa(p.p)} 덱을 셔플`,
-  "ev.millTop": (p) => `${pName(p.p)}의 덱 맨 위 카드가 버려짐: ${cardLabel(p.card)}`,
+  "ev.millTop": (p) => `${pName(p.p)}의 덱 맨 위 카드가 버려짐: ${cardLabel(p.card)}${sourceSuffix(p.source)}`,
   "ev.controlTake": (p) => `${pName(p.p)}${josa(p.p)} 제어권 획득`,
   "ev.controlSpend": (p) => `${pName(p.p)}${josa(p.p)} 제어권 소비`,
   "ev.rearrange": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 라인${p.a}·${p.b} 교환`,
@@ -1369,11 +1477,13 @@ function renderRearrange(state, req, who) {
       if (blocked) return;
       const o = { 1: rearrangeOrder[0], 2: rearrangeOrder[1], 3: rearrangeOrder[2] };
       rearrangeOrder = null; rearrangeFirstPick = null;
+      skipNextRearrangeAnim = true;
       submitAnswer(o);
     } }];
   if (!mustChange) {
     buttons.push({ label: "건너뛰기", secondary: true, onClick: () => {
         rearrangeOrder = null; rearrangeFirstPick = null;
+        skipNextRearrangeAnim = true;
         submitAnswer({ 1: 1, 2: 2, 3: 3 });
       } });
   }
