@@ -150,6 +150,12 @@ $("#start-btn").addEventListener("click", () => {
 $("#win-newgame").addEventListener("click", () => location.reload());
 $("#new-game-btn").addEventListener("click", () => location.reload());
 
+// 모바일: 로그/카드정보 영역 접기-펴기. prompt-bar는 이 토글과 무관하게
+// 항상 보인다(게임 진행에 필수라서 절대 숨기면 안 됨).
+$("#side-panel-toggle").addEventListener("click", () => {
+  $("#side-panel-collapsible").classList.toggle("expanded");
+});
+
 // ----------------------------------------------------------------------------
 // 버림더미 / 전체 덱 구성 열람 모달
 // ----------------------------------------------------------------------------
@@ -1446,7 +1452,16 @@ function renderActionPrompt(state, req, who) {
 }
 
 function renderChooseLinePrompt(state, req, who) {
-  showPromptBar(true, `${who}: ${tr(req.prompt, req.promptParams) || "라인을 선택하세요"} (밝게 표시된 라인을 클릭하세요)`, []);
+  // "자신의 라인도 포함"류 효과(생명0/연기0 등)에서 순서를 고를 때, 자기
+  // 자신이 있는 라인을 먼저 고르면 스스로 덮여 나머지가 중단될 수 있다는
+  // 걸 미리 알려준다 -- 그냥 "라인을 선택하세요"만 보이면 이게 전략적
+  // 선택이라는 걸 모르고 아무 라인이나 눌러서 "왜 하나만 됐지"로 헷갈리기
+  // 쉽다.
+  const hint = req.intent === "play"
+    ? " (자신을 덮는 카드가 있는 라인을 먼저 고르면 거기서 멈출 수 있어요 -- 순서가 중요해요)"
+    : "";
+  showPromptBar(true,
+    `${who}: ${tr(req.prompt, req.promptParams) || "라인을 선택하세요"} (밝게 표시된 라인을 클릭하세요)${hint}`, []);
 }
 
 function renderChooseHandCards(state, req, who) {
@@ -1552,6 +1567,17 @@ $("#codex-back-btn").addEventListener("click", () => {
   $("#codex-screen").classList.add("hidden");
   $("#setup-screen").classList.remove("hidden");
 });
+
+// 모바일: 세트 선택 + 프로토콜 목록을 드로어로 열고 닫기.
+function closeCodexSidebar() {
+  $("#codex-sidebar").classList.remove("mobile-open");
+  $("#codex-sidebar-backdrop").classList.add("hidden");
+}
+$("#codex-sidebar-toggle").addEventListener("click", () => {
+  $("#codex-sidebar").classList.add("mobile-open");
+  $("#codex-sidebar-backdrop").classList.remove("hidden");
+});
+$("#codex-sidebar-backdrop").addEventListener("click", closeCodexSidebar);
 
 document.querySelectorAll("#codex-set-select [data-cset]").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -1727,6 +1753,7 @@ function renderCodexList() {
 function selectCodexProto(protoId) {
   codexSelectedProto = protoId;
   renderCodexList();
+  closeCodexSidebar(); // 모바일에서 드로어로 열려있었다면 선택 즉시 닫음
 
   const accent = PROTO.colors[protoId] || "#888";
   const banner = $("#codex-banner");

@@ -115,6 +115,7 @@
   <header class="topbar">
     <button id="codex-back-btn" class="icon-btn">← 뒤로</button>
     <span class="topbar-title">Compile Codex</span>
+    <button id="codex-sidebar-toggle" class="icon-btn hamburger-btn">☰</button>
   </header>
 
   <div class="codex-tabs">
@@ -123,7 +124,8 @@
   </div>
 
   <div class="codex-body" id="codex-pane-codex">
-    <aside class="codex-sidebar">
+    <div id="codex-sidebar-backdrop" class="mobile-drawer-backdrop hidden"></div>
+    <aside class="codex-sidebar" id="codex-sidebar">
       <div class="codex-set-select" id="codex-set-select">
         <button class="mode-btn small selected" data-cset="main1">MAIN 1 + AUX 1</button>
         <button class="mode-btn small" data-cset="main2">MAIN 2 + AUX 2</button>
@@ -172,6 +174,7 @@
 <div id="game-screen" class="screen hidden">
   <header class="topbar">
     <span class="logo-small">COMPILE</span>
+    <button id="side-panel-toggle" class="icon-btn hamburger-btn">☰</button>
     <button id="new-game-btn" class="icon-btn" title="새 게임">NEW GAME</button>
   </header>
 
@@ -202,9 +205,11 @@
 
     <aside class="side-panel">
       <div class="turn-box" id="turn-box"></div>
-      <div class="log-list" id="log-list"></div>
-      <div class="card-info-box" id="card-info-box">
-        <div class="card-info-empty">카드에 마우스를 올리면<br>여기에 효과가 표시돼요</div>
+      <div class="side-panel-collapsible" id="side-panel-collapsible">
+        <div class="log-list" id="log-list"></div>
+        <div class="card-info-box" id="card-info-box">
+          <div class="card-info-empty">카드에 마우스를 올리면<br>여기에 효과가 표시돼요</div>
+        </div>
       </div>
       <div id="prompt-bar" class="prompt-bar hidden">
         <div class="prompt-text" id="prompt-text"></div>

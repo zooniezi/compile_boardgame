@@ -83,6 +83,10 @@ button {
    ========================================================================== */
 .screen { width: 100vw; height: 100vh; }
 
+#draft-screen, #codex-screen {
+  overflow-y: auto;
+}
+
 /* ==========================================================================
    셋업 화면
    ========================================================================== */
@@ -1915,4 +1919,68 @@ button {
 @media (max-width: 520px) {
   .draft-pool { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
   .codex-cards { grid-template-columns: 1fr; }
+}
+
+/* ==========================================================================
+   모바일 전용: 햄버거 토글 (도감 사이드바 / 게임 사이드패널 로그·정보)
+   ========================================================================== */
+.hamburger-btn { display: none; }
+
+@media (max-width: 860px) {
+  .hamburger-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    padding: 6px 12px;
+  }
+
+  /* ---- 도감: 사이드바(세트 선택 + 프로토콜 목록)를 드로어로 ---- */
+  .codex-body { position: relative; }
+
+  .codex-sidebar {
+    position: fixed;
+    top: 44px; /* topbar 높이 */
+    left: 0;
+    bottom: 0;
+    z-index: 20;
+    width: min(280px, 78vw);
+    max-height: none;
+    background: var(--bg-panel);
+    border-right: 1px solid var(--line-hair);
+    border-bottom: none;
+    transform: translateX(-100%);
+    transition: transform .22s ease;
+    box-shadow: 8px 0 24px rgba(0,0,0,0.5);
+  }
+
+  .codex-sidebar.mobile-open {
+    transform: translateX(0);
+  }
+
+  .mobile-drawer-backdrop {
+    position: fixed;
+    inset: 44px 0 0 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 19;
+  }
+
+  .mobile-drawer-backdrop.hidden { display: none; }
+
+  /* ---- 게임 화면: 로그/카드정보를 기본 접어두고, 펼치면 나타남.
+     prompt-bar는 이 컨테이너 밖이라 항상 보임(게임 진행에 필수). ---- */
+  .side-panel-collapsible {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .25s ease;
+  }
+
+  .side-panel-collapsible.expanded {
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+
+  .side-panel {
+    max-height: none; /* 접힘 상태에선 프롬프트 바 높이만큼만 차지하면 됨 */
+  }
 }
