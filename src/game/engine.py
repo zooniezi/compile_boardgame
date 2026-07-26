@@ -528,9 +528,11 @@ class Engine:
         opts = opts or {}
         must_change = opts.get("must_change", True)
         protos = self.players[target]["protocols"]
+        comp = self.players[target]["compiled"]
         order = self.prompt({
             "type": "rearrange", "chooser": chooser, "target": target,
             "protocols": {1: protos[1], 2: protos[2], 3: protos[3]},
+            "compiled": {1: comp[1], 2: comp[2], 3: comp[3]},
             "prompt": opts.get("prompt", "프로토콜을 재배열하세요"), "intent": "rearrange",
             "mustChange": must_change,
         })

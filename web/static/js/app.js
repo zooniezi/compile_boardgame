@@ -749,14 +749,22 @@ function animateProtocolSwap(playerPi, moves) {
 
 function protoPill(state, pi, line, rearrangeReq) {
   const p = state.players[String(pi)];
-  const compiled = p.compiled[String(line)];
   const isRearrangeTarget = rearrangeReq && rearrangeReq.target === pi;
-  let proto;
+  let proto, compiled;
   if (isRearrangeTarget) {
     if (!rearrangeOrder) rearrangeOrder = [1, 2, 3];
-    proto = (rearrangeReq.protocols || {})[rearrangeOrder[line - 1]];
+    // 미리보기 중엔 "지금 이 슬롯에 보이는 프로토콜이 원래 있던 라인"의
+    // compiled 값을 같이 가져와야 한다 -- 컴파일 여부는 라인 위치가 아니라
+    // 프로토콜 자신을 따라가므로(규칙: 프로토콜 카드만 이동, 스택은 안 움직임).
+    // proto만 재배치를 반영하고 compiled는 그 라인의 원래 값을 그대로 썼던
+    // 게 버그: 미리보기 단계에서 완료/미완료 표시가 실제 데이터와 어긋나
+    // 보였음.
+    const sourceLine = rearrangeOrder[line - 1];
+    proto = (rearrangeReq.protocols || {})[sourceLine];
+    compiled = (rearrangeReq.compiled || {})[sourceLine];
   } else {
     proto = p.protocols[String(line)];
+    compiled = p.compiled[String(line)];
   }
   const el = document.createElement("div");
   el.className = "proto-pill" + (compiled ? " compiled" : "");

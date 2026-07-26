@@ -1753,3 +1753,166 @@ button {
   margin-bottom: 28px;
   text-shadow: 0 0 30px var(--phosphor-glow);
 }
+
+/* ==========================================================================
+   모바일 대응 (좁은 화면)
+   ========================================================================== */
+@media (max-width: 860px) {
+  /* 게임 화면: 보드/사이드패널을 좌우 대신 위아래로. 사이드패널 안에
+     .prompt-bar(카드 선택/예-아니오 등 실제 게임 진행에 꼭 필요한 UI)가
+     들어있으므로, 사이드패널 높이를 제한해 스크롤 컨테이너로 만들고 그 안에서
+     prompt-bar를 sticky bottom으로 고정한다 -- 로그/카드정보가 아무리 길어도
+     프롬프트는 항상 화면에 보인다. */
+  .game-body {
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .board {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 8px 6px 8px 8px;
+    gap: 6px;
+  }
+
+  .control-strip {
+    flex: 0 0 22px;
+  }
+
+  .control-marker {
+    width: 22px;
+    height: 22px;
+  }
+
+  .deck-col {
+    flex: 0 0 44px;
+    gap: 4px;
+  }
+
+  .deck-box, .discard-box {
+    width: 40px;
+    height: 52px;
+    font-size: 8px;
+  }
+
+  .deck-box .count-badge, .discard-box .count-badge {
+    min-width: 16px;
+    height: 16px;
+    font-size: 9px;
+    top: -6px;
+    right: -6px;
+  }
+
+  .side-panel {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 46vh;
+    overflow-y: auto;
+    border-left: none;
+    border-top: 1px solid var(--line-hair);
+  }
+
+  .log-list {
+    flex: 0 0 auto;
+    max-height: 84px;
+    min-height: 40px;
+  }
+
+  .card-info-box {
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: 22vh;
+  }
+
+  .prompt-bar {
+    position: sticky;
+    bottom: 0;
+    z-index: 4;
+    background: var(--bg-panel-raised);
+  }
+
+  /* 라인/프로토콜: 글자 크기와 여백을 줄여서 좁은 3열에도 안 잘리게 */
+  .proto-belt { padding: 5px 5px; gap: 3px; }
+  .proto-pill { font-size: 11px; gap: 4px; }
+  .proto-pill .pp-name { padding: 6px 6px; font-size: 11px; }
+  .proto-pill .pp-value { min-width: 30px; padding: 5px 4px; font-size: 12px; }
+
+  .board-card .card-header { font-size: 9px; padding: 2px 5px; }
+  .board-card .card-num { font-size: 11px; }
+  .board-card .card-body { font-size: 10.5px; padding: 5px 7px 6px 9px; }
+  .board-card.covered { min-height: 20px; }
+  .board-card.uncovered { min-height: 24px; }
+
+  /* 손패: 카드 크기를 줄이고 가로 스크롤로 넘치는 걸 받아준다 */
+  .opp-hand-area { flex: 0 0 56px; }
+  .opp-hand-area .card.hand-card { transform: scale(0.72); }
+
+  .hand-area { flex: 0 0 78px; }
+  .hand-cards {
+    gap: 6px;
+    padding: 6px;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .hand-cards .card { width: 84px; height: 50px; flex: 0 0 auto; }
+  .hand-cards .card .hc-header { font-size: 11px; }
+  .hand-cards .card .hc-value { flex-basis: 34px; font-size: 18px; }
+
+  .status-bar { padding: 6px 10px; font-size: 11px; }
+}
+
+@media (max-width: 520px) {
+  /* 아주 좁은 화면(휴대폰 세로): 한 번 더 압축 */
+  .deck-col { flex-basis: 36px; }
+  .deck-box, .discard-box { width: 32px; height: 44px; }
+  .proto-pill .pp-name { font-size: 10px; padding: 5px 4px; }
+  .proto-pill .pp-value { min-width: 26px; font-size: 11px; }
+  .hand-cards .card { width: 72px; height: 46px; }
+  .hand-cards .card .hc-value { font-size: 15px; flex-basis: 28px; }
+}
+
+@media (max-width: 860px) {
+  /* 밴픽: 좌우 픽 리스트(190px x2)가 좁은 화면 폭 대부분을 차지해버려서
+     가운데 카드 풀이 거의 안 남던 문제 -- 위/가운데/아래로 세로 쌓기 */
+  .draft-body {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - 150px);
+    padding: 0 10px 16px;
+  }
+  .draft-side {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .draft-picks {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .draft-pick-chip { flex: 1 1 auto; min-width: 90px; }
+  .draft-pool {
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 8px;
+  }
+
+  /* 도감: 좌측 사이드바(220px 고정)가 좁은 화면에서 메인을 짓누르던 문제 */
+  .codex-body {
+    flex-direction: column;
+    height: auto;
+    min-height: calc(100vh - 44px - 58px);
+  }
+  .codex-sidebar {
+    flex: 0 0 auto;
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--line-hair);
+    max-height: 40vh;
+  }
+  .codex-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 520px) {
+  .draft-pool { grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); }
+  .codex-cards { grid-template-columns: 1fr; }
+}
