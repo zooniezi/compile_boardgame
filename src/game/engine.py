@@ -1098,31 +1098,42 @@ class Engine:
         e["landing"] = True
         card, d = e["card"], e["dest"]
         if d["zone"] == "field":
+            st = self.players[d["pi"]]["stacks"][d["line"]]
             idx = None
             if d.get("underCard"):
-                st = self.players[d["pi"]]["stacks"][d["line"]]
                 for i, x in enumerate(st):
                     if x is d["underCard"]:
                         idx = i
                         break
+
             if idx is not None:
-                # 밑으로 슬라이드해 들어가는 경우는 새로 덮는 게 아니라 커버 트리거 없음.
                 card.owner = card.owner or d["pi"]
                 card.face_up = d["faceUp"]
-                self.players[d["pi"]]["stacks"][d["line"]].insert(idx, card)
+                
+                # underCard 바로 '다음(위)' 위치 지정
+                target_idx = idx + 1
+                
+                # 만약 underCard가 스택의 맨 위 카드였다면
+                # 정식으로 맨 위에 얹고 커버 트리거(onCovered)를 처리함
+                if target_idx >= len(st):
+                    self.place_on_stack(card, d["pi"], d["line"], d["faceUp"])
+                else:
+                    # 스택 중간에 끼워 넣는 경우 (슬라이드 삽입)
+                    st.insert(target_idx, card)
             else:
                 self.place_on_stack(card, d["pi"], d["line"], d["faceUp"])
+
         elif d["zone"] == "trash":
             card.face_up = True
             self.players[card.owner]["discard"].append(card)
         elif d["zone"] == "hand":
             if d.get("owner"):
-                card.owner = d["owner"]  # 소유권 이전 (룰북)
+                card.owner = d["owner"]
             card.face_up = False
             self.players[card.owner]["hand"].append(card)
         elif d["zone"] == "deck":
             card.face_up = False
-            self.players[card.owner]["deck"].append(card)  # 덱의 top = 리스트의 끝
+            self.players[card.owner]["deck"].append(card)
             self.players[card.owner]["revealedTop"] = None
 
         for i, o in enumerate(self._commits):
@@ -1132,14 +1143,13 @@ class Engine:
         card._committed = False
         if e.get("afterLand"):
             e["afterLand"](e)
-        # 이 착지로 같은 라인의 다음 commit들이 풀렸을 수 있다: 준비된 것들을
-        # commit된 순서대로 전부 착지시킨다.
+
         i = 0
         while i < len(self._commits):
             o = self._commits[i]
             if o.get("ready") and not o.get("landing") and not self.commit_blocked_by(o):
                 self.perform_landing(o)
-                i = 0  # 큐가 바뀌었으니 처음부터 다시 스캔
+                i = 0
             else:
                 i += 1
 
