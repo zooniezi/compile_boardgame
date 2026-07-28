@@ -77,6 +77,71 @@ def test_courage_3_moves_to_opponent_strongest_line(engine):
     assert c in e.players[1]["stacks"][3]
 
 
+def test_courage_3_offers_a_choice_when_multiple_lines_tie_for_highest(engine):
+    """상대의 최고값 라인이 여러 개(동점)면, 조용히 아무 데나 고르지 말고
+    플레이어가 직접 선택할 수 있어야 한다."""
+    e = engine
+    c = neutral_card(e, "Courage", 3, 1)
+    c.face_up = True
+    c.definition = get("Courage", 3)
+    e.players[1]["stacks"][1].append(c)
+    o2 = neutral_card(e, "Ice", 5, 2)
+    o2.face_up = True
+    e.players[2]["stacks"][2].append(o2)
+    o3 = neutral_card(e, "Death", 5, 2)  # 라인2와 정확히 동점(값5)
+    o3.face_up = True
+    e.players[2]["stacks"][3].append(o3)
+
+    captured = []
+
+    class SpyAI:
+        def decide(self, g, req):
+            if req.get("type") == "chooseLine":
+                captured.append(req["candidates"])
+                return 3
+            return True
+
+    e.ai_modules[1] = SpyAI()
+    e.players[1]["isAI"] = True
+    c.definition["finish"](e, c)
+
+    assert captured == [[2, 3]]  # 동점인 두 라인이 그대로 후보로 제시됨
+    assert c in e.players[1]["stacks"][3]  # 선택한 라인3으로 실제 이동
+
+
+def test_courage_3_excludes_own_current_line_from_tied_candidates(engine):
+    """최고값 동점 라인 중 하나가 하필 카드 자신이 지금 있는 라인이면,
+    그 라인은 후보에서 빠져야 한다(거기로 '이동'하는 건 의미가 없음).
+    남는 후보가 하나뿐이면 선택 프롬프트 없이 바로 이동한다."""
+    e = engine
+    c = neutral_card(e, "Courage", 3, 1)
+    c.face_up = True
+    c.definition = get("Courage", 3)
+    e.players[1]["stacks"][1].append(c)
+    o1 = neutral_card(e, "Ice", 5, 2)  # c가 있는 라인1도 동점
+    o1.face_up = True
+    e.players[2]["stacks"][1].append(o1)
+    o2 = neutral_card(e, "Metal", 5, 2)
+    o2.face_up = True
+    e.players[2]["stacks"][2].append(o2)
+
+    captured = []
+
+    class SpyAI:
+        def decide(self, g, req):
+            if req.get("type") == "chooseLine":
+                captured.append(req["candidates"])
+                return req["candidates"][0]
+            return True
+
+    e.ai_modules[1] = SpyAI()
+    e.players[1]["isAI"] = True
+    c.definition["finish"](e, c)
+
+    assert captured == []  # 후보가 1개뿐이라 선택 프롬프트 자체가 안 뜸
+    assert c in e.players[1]["stacks"][2]
+
+
 def test_courage_5_shares_discard_one():
     assert get("Courage", 5) is get("Water", 5)
 

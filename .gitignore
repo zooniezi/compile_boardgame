@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .DS_Store
+
+
+selfplay_5000.npz

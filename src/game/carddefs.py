@@ -642,10 +642,20 @@ def _gravity_0_play(g, c):
     # 포함된다 (룰링). 카운트는 루프 시작 전에 한 번만 계산 -- 새로 낸
     # 카드는 세지 않음.
     count = len(g.players[1]["stacks"][line]) + len(g.players[2]["stacks"][line])
-    # "이 카드 밑에": 뽑은 카드들은 방금 낸 Gravity_0(맨 위) 바로 밑으로
-    # 슬라이드해 들어간다.
-    for _ in range(count // 2):
-        g.play_top_face_down(c.owner, line, c)
+    # 특별한 위치 지정 없이, 그냥 이 라인에 평범하게 뒷면으로 낸다 -- 매번
+    # 새로 낸 카드가 자연스럽게 맨 위(uncovered)로 오면서 이전 카드를
+    # 덮는다 (Gravity_0 자신도 첫 카드에 덮인다).
+    #
+    # command()로 감싸는 이유: 이 카드는 "어느 라인에 낼지" 같은 선택의
+    # 여지가 전혀 없는 고정 반복이다(Life_0/Smoke_0처럼 순서를 고르는
+    # 카드와 다름). command()가 없으면, 첫 번째로 낸 카드가 Gravity_0
+    # 자신을 덮는 순간 "명령 사이에 덮임" 판정으로 나머지 반복이 전부
+    # 중단돼버린다 -- 카드 텍스트가 약속한 "2장마다"를 못 지키게 됨.
+    # command()로 전체를 하나의 명령으로 묶으면 중간에 덮여도 계속 진행된다.
+    def repeat():
+        for _ in range(count // 2):
+            g.play_top_face_down(c.owner, line)
+    g.command(repeat)
 
 
 def _gravity_1_play(g, c):
@@ -1418,29 +1428,37 @@ def _courage_2_finish(g, c):
         g.draw(c.owner, 1)
 
 
-def _courage_3_best_opp_line(g, c):
+def _courage_3_best_opp_lines(g, c):
+    """상대의 최고값 라인(들)을 전부 반환한다 -- 동점이면 여러 개일 수 있음.
+    자기 자신이 이미 그 라인에 있으면 후보에서 뺀다(거기로 '이동'하는 건
+    아무 의미가 없으므로)."""
     o = _opp(c)
-    best, best_v = None, None
-    for l in (1, 2, 3):
-        v = g.line_value(o, l)
-        if best_v is None or v > best_v:
-            best_v, best = v, l
-    return best
+    _, cur_line, _ = g.locate(c)
+    best_v = max(g.line_value(o, l) for l in (1, 2, 3))
+    return [l for l in (1, 2, 3) if g.line_value(o, l) == best_v and l != cur_line]
 
 
 def _courage_3_can_finish(g, c):
-    best = _courage_3_best_opp_line(g, c)
     _, line, _ = g.locate(c)
-    return best is not None and line is not None and best != line
+    return line is not None and len(_courage_3_best_opp_lines(g, c)) > 0
 
 
 def _courage_3_finish(g, c):
-    best = _courage_3_best_opp_line(g, c)
-    _, line, _ = g.locate(c)
-    if not best or best == line:
+    cands = _courage_3_best_opp_lines(g, c)
+    if not cands:
         return
-    if _ask(g, c.owner, "이 카드를 상대의 최고값 라인으로 이동할까요?", "move"):
-        g.move_card(c, c.owner, best)
+    if not _ask(g, c.owner, "이 카드를 상대의 최고값 라인으로 이동할까요?", "move"):
+        return
+    if len(cands) == 1:
+        dest = cands[0]
+    else:
+        # 동점인 라인이 여러 개면 어디로 갈지 직접 고르게 한다.
+        dest = g.choose_line_from(c.owner, cands,
+                                   {"prompt": "상대의 최고값 라인이 여러 곳이에요. 어디로 이동할까요?",
+                                    "intent": "move", "target": c.owner})
+        if not dest:
+            return
+    g.move_card(c, c.owner, dest)
 
 
 def _courage_6_can_finish_top(g, c):

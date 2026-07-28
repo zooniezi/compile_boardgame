@@ -489,6 +489,12 @@ async function handleState(state, mySeq) {
       animateCompileFill(ev.player, ev.line);
       await sleep(950);
     } else {
+      // 리프레시로 인한 첫 뽑기 -- refresh()가 emit하는 "draw" 이벤트 중,
+      // i18n.key가 "ev.refresh"인 게 바로 그 시작 신호(리프레시 전체를
+      // 통틀어 딱 한 번만 붙음, engine.py의 refresh_log() 참고).
+      if (ev.kind === "draw" && ev.i18n && ev.i18n.key === "ev.refresh") {
+        showRefreshBanner(ev.player);
+      }
       const dur = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
       await sleep(dur);
     }
@@ -544,21 +550,39 @@ function render(state) {
   knownCardUids = allUids;
 }
 
+// 하스스톤 식 배너(턴 시작/리프레시) 공용 대기열. 서로 다른 엘리먼트라
+// 그냥 각자 띄우면 하나가 안 사라졌는데 다른 게 겹쳐 뜰 수 있다 -- 하나의
+// 줄에 세워서, 먼저 뜬 배너가 다 사라지고 짧은 간격(250ms)이 지난 뒤에만
+// 다음 배너가 뜨게 한다.
+let bannerChain = Promise.resolve();
+function playBanner(el, textEl, text) {
+  bannerChain = bannerChain.then(() => new Promise((resolve) => {
+    textEl.textContent = text;
+    el.classList.remove("hidden");
+    textEl.style.animation = "none";
+    void textEl.offsetWidth; // 강제 리플로우로 애니메이션 재시작
+    textEl.style.animation = "";
+    setTimeout(() => {
+      el.classList.add("hidden");
+      setTimeout(resolve, 250); // 다음 배너가 뜨기 전 짧은 여백
+    }, 1700);
+  }));
+}
+
 // 하스스톤 식 턴 시작 배너: "OOO의 턴"
 let announcedTurnCount = -1;
 function maybeShowTurnBanner(state) {
   if (state.winner || state.turnCount == null) return;
   if (state.turnCount === announcedTurnCount) return;
   announcedTurnCount = state.turnCount;
-  const el = $("#turn-banner");
-  const textEl = $("#turn-banner-text");
-  textEl.textContent = `${pName(state.turn)}의 턴`;
-  el.classList.remove("hidden");
-  textEl.style.animation = "none";
-  void textEl.offsetWidth; // 강제 리플로우로 애니메이션 재시작
-  textEl.style.animation = "";
-  clearTimeout(window.__turnBannerTimer);
-  window.__turnBannerTimer = setTimeout(() => el.classList.add("hidden"), 1700);
+  playBanner($("#turn-banner"), $("#turn-banner-text"), `${pName(state.turn)}의 턴`);
+}
+
+// 하스스톤 식 리프레시 배너: "OOO의 리프레시" -- 턴 배너와 같은 연출을
+// 재사용하되 별도 엘리먼트다. 위 공용 대기열 덕분에 턴 배너가 아직
+// 안 사라졌으면 리프레시 배너는 그게 끝날 때까지 기다렸다가 뜬다.
+function showRefreshBanner(pi) {
+  playBanner($("#refresh-banner"), $("#refresh-banner-text"), `${pName(pi)}의 리프레시`);
 }
 
 // 상단: "상대"(=지금 결정하는 사람이 아닌 쪽) 손패를, 내 손패와 동일한
@@ -978,6 +1002,13 @@ function hideCardZoom() {
 }
 
 function cardInfoInnerHtml(card) {
+  if (card.proto == null) {
+    // 서버가 정체를 감춘 카드(다른 플레이어/AI의 뒷면 카드) -- 확인할 수 없음을 명확히 표시
+    return `<div class="ci-header" style="--ci-accent:#666">
+      <span class="ci-name">뒷면 카드</span>
+      <span class="ci-value" style="--ci-accent:#666">?</span>
+    </div><div class="ci-band-empty">공개되지 않은 카드예요</div>`;
+  }
   const accent = PROTO.colors[card.proto] || "#3dffa0";
   const text = (PROTO.cardText && PROTO.cardText[`${card.proto}_${card.value}`]) || { top: [], mid: [], bot: [] };
   let html = `<div class="ci-header" style="--ci-accent:${accent}">

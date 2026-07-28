@@ -58,7 +58,6 @@ def train(data_path, out_path):
 
 
 if __name__ == "__main__":
-    data_path = sys.argv[1] if len(sys.argv) > 1 else "selfplay_5000.npz"
+    data_path = sys.argv[1] if len(sys.argv) > 1 else "selfplay_1000.npz"
     out_path = sys.argv[2] if len(sys.argv) > 2 else "eval_weights.npz"
     train(data_path, out_path)
-

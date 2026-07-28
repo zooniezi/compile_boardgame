@@ -105,29 +105,62 @@ def _pick_protocols():
     return pool[:3], pool[3:6]
 
 
-def _card_dict(c):
+def _card_dict(c, hidden=False):
+    """hidden=True면 이 카드의 진짜 정체(proto/value)를 감추고 uid/owner/
+    faceUp만 보낸다 -- 뒷면 카드가 다른 플레이어(또는 AI) 소유일 때 씀.
+    화면은 faceUp만으로도 카드 뒷면을 그릴 수 있으니 렌더링엔 지장 없다."""
+    if hidden:
+        return {"uid": c.uid, "proto": None, "value": None, "owner": c.owner, "faceUp": c.face_up}
     return {"uid": c.uid, "proto": c.proto, "value": c.value, "owner": c.owner, "faceUp": c.face_up}
 
 
 def _serialize(e):
-    """엔진 상태를 JSON으로 보낼 수 있는 딕셔너리로 변환."""
+    """엔진 상태를 JSON으로 보낼 수 있는 딕셔너리로 변환.
+
+    프라이버시: 이 화면은 두 플레이어가 한 브라우저를 같이 보는 hotseat과,
+    사람+AI가 같이 보는 vs_ai 양쪽 다 지원한다. 서버는 "지금 화면을 보는
+    게 정확히 누구인지" 알 방법이 없으므로(세션 구분이 없음), 대신 아래
+    규칙으로 노출 범위를 정한다:
+    - 소유자가 AI면: 항상 감춘다 (누구 턴이든 사람이 절대 못 보게).
+    - 소유자가 사람이고, 상대도 사람(hotseat)이면: 지금 그 소유자의
+      턴일 때만 보여준다 (상대가 자기 턴에 내 패를 못 보게).
+    - 소유자가 사람이고, 상대는 AI(vs_ai)면: 항상 보여준다 -- 화면을
+      보는 사람은 한 명뿐이라 자기 자신에게 숨길 이유가 없다 (AI 턴이라고
+      내 손패까지 같이 숨겨지면 안 됨).
+    앞면(공개) 카드와 버림더미는 원래 공개 정보라 그대로 보낸다.
+    """
     players = {}
     for pi in (1, 2):
         p = e.players[pi]
+        opp = e.players[2 if pi == 1 else 1]
+        if p["isAI"]:
+            visible = False
+        elif opp["isAI"]:
+            visible = True  # vs_ai: 사람은 한 명뿐이니 항상 자기 걸 봄
+        else:
+            visible = e.turn == pi  # hotseat: 지금 자기 턴일 때만
+
+        def hand_card(c, _visible=visible):
+            return _card_dict(c, hidden=not _visible)
+
+        def stack_card(c, _visible=visible):
+            # 앞면 카드는 원래 공개 정보라 소유자와 무관하게 항상 그대로.
+            return _card_dict(c, hidden=(not c.face_up and not _visible))
+
         players[str(pi)] = {
             "isAI": p["isAI"],
             "protocols": {str(l): p["protocols"][l] for l in (1, 2, 3)},
             "compiled": {str(l): p["compiled"][l] for l in (1, 2, 3)},
-            "hand": [_card_dict(c) for c in p["hand"]],
+            "hand": [hand_card(c) for c in p["hand"]],
             "deckCount": len(p["deck"]),
-            "discard": [_card_dict(c) for c in p["discard"]],
-            "stacks": {str(l): [_card_dict(c) for c in p["stacks"][l]] for l in (1, 2, 3)},
+            "discard": [_card_dict(c) for c in p["discard"]],  # 버림더미는 항상 공개 정보
+            "stacks": {str(l): [stack_card(c) for c in p["stacks"][l]] for l in (1, 2, 3)},
             # 패시브 보정(거울0, 금속0 등)까지 반영된 진짜 라인 값 -- 프론트는
             # 이 값을 그대로 써야 한다. 카드 값을 화면에서 단순 합산하면
             # lineValueSelf/lineValueOppDelta 같은 패시브가 누락된다.
             "lineValues": {str(l): e.line_value(pi, l) for l in (1, 2, 3)},
             # 명료1처럼 "다음에 바뀌기 전까지 공개 유지"되는 덱 맨 위 카드.
-            # 없으면 None.
+            # 없으면 None. 규칙상 원래 공개(양쪽 다 볼 수 있음)라 마스킹 대상 아님.
             "revealedTop": _card_dict(e.cards_by_uid[p["revealedTop"]])
                 if p.get("revealedTop") and p["revealedTop"] in e.cards_by_uid else None,
         }
