@@ -1,8 +1,7 @@
 """컴파일 카드 180장의 효과 정의. 키는 "Proto_value" (예: "Water_0").
 
 플레이어가 읽는 룰 텍스트는 i18n에 있음 -- 여기 있는 건 동작(behavior)만.
-정의 딕셔너리(각 카드의 D["Proto_value"])는 다음 키를 가질 수 있다
-(Lua 원본 키 이름 그대로 유지 -- carddefs.lua와 대조하기 쉽도록):
+정의 딕셔너리(각 카드의 D["Proto_value"])는 다음 키를 가질 수 있다:
   play(g,c)        내는 순간의 명령 (앞면으로 뒤집힐 때도 재발동)
   start(g,c)       "Inicio:" 트리거 (소유자 턴 시작, uncovered일 때)
   finish(g,c)      "Fin:" 트리거 (소유자 턴 끝, uncovered일 때)
@@ -13,14 +12,12 @@
   reactive = {afterDraw/afterDelete/afterDiscard/afterCache = fn}
   can = {start/finish/startTop/finishTop = fn(g,c)->bool}  트리거 예측 함수
 
-콜백 인자 개수 계약 (Lua는 초과 인자를 조용히 무시하지만 Python은 엄격하게
-검사하므로, 실제로 안 쓰는 인자도 시그니처에 받아야 함 -- 안 쓰면 `*_`로):
+콜백 인자 개수 계약 (Python은 인자 개수를 엄격하게 검사하므로, 실제로 안
+쓰는 인자도 시그니처에 받아야 함 -- 안 쓰면 `*_`로):
   play / start / finish / onCompileDelete / can.*   : (g, c)            2개
   onCovered                                          : (g, c, incoming, incoming_face_up)  4개
   reactive.* / reactiveTop.*                         : (g, c, actor, ctx, s)               5개
   passive.lineValueSelf                              : (g, c, line)     3개
-
-포팅 원본: carddefs.lua
 """
 
 # ---------------------------------------------------------------------------
@@ -1859,8 +1856,8 @@ def _time_3_play(g, c):
     # 뒷면으로 다른 라인에 -- 라인 잠금(Plague_0 등) 존중.
     line = _line_of(g, c)
     allowed = {l: True for l in (1, 2, 3) if l != line}
-    # Lua 원본은 반환값 중 line만 취하고 faceUp은 버린다 (faceDownOnly라
-    # 어차피 항상 False이므로 아래에서 명시적으로 False를 넘김).
+    # 반환값 중 line만 쓰고 face_up은 버린다 -- faceDownOnly라 어차피
+    # 항상 False이므로 아래에서 명시적으로 False를 넘긴다.
     dest, _face_up = _choose_line_and_face(g, c.owner, card,
                                             {"faceDownOnly": True, "lines": allowed,
                                              "linePrompt": "뒷면으로 플레이할 곳"})

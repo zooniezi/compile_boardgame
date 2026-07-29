@@ -7,9 +7,8 @@ DEFS는 카드 효과를 클로저({"play": <function>})로 담고 있어서, AI
 
 TAGS는 카드 텍스트가 아니라 carddefs.py의 실제 구현과 대조해서 채운다 --
 텍스트만 보고 짐작하면 "누가 대상인지"(양쪽/상대만), "강제/선택" 같은 미묘한
-차이를 놓치기 쉽다.
-
-포팅 원본: ai_prior.lua (필드명은 파이썬 스타일로: selfDiscard -> self_discard 등)
+차이를 놓치기 쉽다. 필드명은 파이썬 스타일(snake_case)로 통일한다
+(예: self_discard, opp_draw 등).
 """
 
 from src.game.rules import COMPILE_THRESHOLD
@@ -526,8 +525,13 @@ def plan_rearrange(g, pi, compiling_line=None):
     낮은 곳과 맞바꿔서 그 컴파일을 진짜 진전으로 바꾼다.
 
     갈래 2: 그게 아니면 상대를 방해한다 -- 상대의 미완료 라인 중 위협도가
-    최우선(값은 동점 처리용)인 라인의 프로토콜을, 상대의 값이 제일 낮은
-    다른 라인과 맞바꾼다.
+    최우선(값은 동점 처리용)인 라인의 프로토콜을, 우선 상대가 "이미
+    컴파일한" 프로토콜(있으면 그중 재구축 값이 가장 낮은 것)과 맞바꾼다 --
+    그러면 상대의 강제 컴파일이 새로 얻는 것 없는 재컴파일로 전락해 위협이
+    실제로 무력화된다. 이미 컴파일한 프로토콜이 없으면 상대의 값이 제일
+    낮은 다른 라인과 맞바꾼다(무력화는 못 해도 최소한 값은 낮춘다). 위협
+    라인의 값 자체가 6 미만이면(너무 하찮음) 재배치권을 낭비하지 않고
+    포기한다.
 
     반환: {"who": 대상 플레이어, "order": {1:.., 2:.., 3:..}} 또는 None.
     """
@@ -545,25 +549,32 @@ def plan_rearrange(g, pi, compiling_line=None):
             order[compiling_line], order[best] = best, compiling_line
             return {"who": pi, "order": order}
 
-    best, best_key = None, None
+    best, best_key, best_val = None, None, None
     for line in (1, 2, 3):
         if not g.players[o]["compiled"][line] and line != compiling_line:
             v = g.line_value(o, line)
             key = _line_threat(g, pi, line) * 100 + v
             if best_key is None or key > best_key:
-                best_key, best = key, line
-    if best is None:
+                best_key, best_val, best = key, v, line
+    if best is None or best_val < 6:
         return None
-    low, low_val = None, None
+
+    swap, swap_val = None, None
     for line in (1, 2, 3):
-        if line != best:
+        if line != best and g.players[o]["compiled"][line]:
             v = g.line_value(o, line)
-            if low_val is None or v < low_val:
-                low_val, low = v, line
-    if low is None or low == best:
+            if swap_val is None or v < swap_val:
+                swap_val, swap = v, line
+    if swap is None:
+        for line in (1, 2, 3):
+            if line != best:
+                v = g.line_value(o, line)
+                if swap_val is None or v < swap_val:
+                    swap_val, swap = v, line
+    if swap is None:
         return None
     order = {1: 1, 2: 2, 3: 3}
-    order[best], order[low] = low, best
+    order[best], order[swap] = swap, best
     return {"who": o, "order": order}
 
 
@@ -576,7 +587,7 @@ def score_action(g, pi, action):
     씀). 아직 카드 지식(effect_prior)이 없는 카드는 기본항만으로 채점되고,
     태그가 있으면 그 값이 더해진다 -- 태그를 채울수록 이 점수가 정확해짐.
 
-    아직 Lua ai.lua의 scoreAction 전체(1-a 로드맵)를 포팅한 건 아니고, 태그
+    아직 채점 로직을 완전히 정교화한 건 아니고(로드맵 1-a 항목), 태그
     파이프라인이 실제로 pick_best에 연결되는지 확인할 만큼의 기본항만 담음.
     """
     if action.get("kind") == "refresh":
@@ -592,6 +603,25 @@ def score_action(g, pi, action):
     card = g.cards_by_uid[action["uid"]]
     line = action["line"]
     face_up = action["faceUp"]
+
+    side = action.get("side")
+    if side and side != pi:
+        # Corruption_0류 "상대편에 내기"(playAnySide): 카드가 pi의 라인이
+        # 아니라 side(상대) 쪽 스택에 놓인다. 아래 my_line/opp_line 기반
+        # 채점을 그대로 쓰면 실제로 카드가 놓이지도 않는 내 라인 값으로
+        # 채점하는 오류가 나므로, 이 경우는 따로 전용 분기로 처리한다.
+        # 앞면으로 놓아 상대의 강한 카드를 덮으면 좋고(그 카드가 봉인됨),
+        # 뒷면은 그냥 상대에게 값 2를 공짜로 주는 셈이라 나쁘다.
+        top = g.top_card(side, line)
+        s = 0.5 if face_up else -3.0
+        if face_up and top and top.face_up:
+            s += _eff_val(top) * 0.8
+        # 소폭 잡음(±0.1)으로 동점일 때 결정론적으로 늘 같은 카드만
+        # 고르는 걸 방지 -- 메커니즘과 무관한 aux_rng 사용(ai_ismcts.py와
+        # 동일한 원칙).
+        s += (g.aux_rng(20) - 10) / 100.0
+        return s
+
     o = _other(pi)
     contrib = card.value if face_up else 2
     my_line = g.line_value(pi, line)
@@ -615,3 +645,282 @@ def score_action(g, pi, action):
     if opp_line - new_mine >= 6:
         score -= 4
     return score
+
+
+# ---------------------------------------------------------------------------
+# 하위 결정 휴리스틱 -- chooseCard/chooseLine/chooseHandCards/rearrange/
+# yesno/chooseOption 채점·판단 로직 (로드맵 1-b 항목). score_action/
+# plan_rearrange와 달리 이 함수들은 액션 채점이
+# 아니라 카드 효과가 실행 중에 묻는 하위 질문(누구를 지울지, 어느 라인으로
+# 옮길지, 손패에서 뭘 낼지 등)에 답한다. HeuristicAI가 이 함수들로
+# 디스패치하며, ai_ismcts.py의 기본 롤아웃 정책이 HeuristicAI라서 ISMCTS
+# 시뮬레이션 품질에도 그대로 영향을 준다.
+# ---------------------------------------------------------------------------
+
+def _max_by_eff_val(cards):
+    best = None
+    for c in cards:
+        if best is None or _eff_val(c) > _eff_val(best):
+            best = c
+    return best
+
+
+def _min_by_eff_val(cards):
+    best = None
+    for c in cards:
+        if best is None or _eff_val(c) < _eff_val(best):
+            best = c
+    return best
+
+
+def _choose_card_delete_or_flip(g, me, cands, intent, req):
+    """카드 1장을 지우거나(delete) 뒤집는(flip) 하위 결정. 값 스윙(내
+    카드면 손해, 상대 카드면 이득) + 그 카드가 속한 라인이 컴파일 위협
+    중이면 "이 선택이 실제로 그 위협을 깨는가"까지 반영한다(단순히
+    "상대 최고값 카드부터"보다 더 정교한 버전)."""
+    o = _other(me)
+    best, best_s = None, None
+    for c in cands:
+        is_mine = c.owner == me
+        if intent == "delete":
+            s = -_eff_val(c) if is_mine else _eff_val(c)
+        elif is_mine:
+            # 내 카드를 뒤집기: 뒷면이면 값이 드러나 손해, 앞면이면 2로
+            # 깎여 오히려 방어적 이득(위험한 값을 숨김).
+            s = (2 - c.value) if c.face_up else (c.value - 2)
+        else:
+            # 상대 카드를 뒤집기: 앞면->뒷면(값 깎기)은 이득, 뒷면->앞면
+            # (정체 불명 공개)은 약한 손해로 취급.
+            s = (c.value - 2) if c.face_up else -1.5
+
+        _, line, _ = g.locate(c)
+        if line:
+            t = _line_threat(g, me, line)
+            if t > 0:
+                ov, mv = g.line_value(o, line), g.line_value(me, line)
+                drop = 0.0
+                if not is_mine:
+                    drop = _eff_val(c) if intent == "delete" else (
+                        (c.value - 2) if c.face_up else 0.0)
+                gain = 0.0
+                if is_mine and intent == "flip" and not c.face_up:
+                    gain = c.value - 2
+                # 이 선택으로 상대 라인 값이 임계값 밑으로 떨어지거나, 내
+                # 라인이 상대를 따라잡으면 -- 진짜로 위협을 깨는 것이므로
+                # 위협도에 비례한 보너스.
+                if ov - drop < COMPILE_THRESHOLD or ov - drop <= mv + gain:
+                    s += 12 if t == 2 else 4
+        if best_s is None or s > best_s:
+            best_s, best = s, c
+    if req.get("optional") and (best is None or best_s <= 0):
+        return None
+    return best.uid if best else cands[0].uid
+
+
+def _choose_card_return_or_move(g, me, cands, req):
+    """카드 1장을 손으로 반환하거나(return) 다른 라인으로 옮기는(move)
+    하위 결정. 상대의 최고값 카드를 우선 노리고, 없으면 내 카드 중
+    최저값을 고른다 -- 단, "return"인데 지금 resolve 중인 카드 자신
+    (req.sourceUid)을 되돌리면 효과 전체가 제자리로 돌아오는 의미 없는
+    루프가 되므로, 다른 후보가 있으면 그쪽을 우선한다."""
+    theirs = [c for c in cands if c.owner != me]
+    target = _max_by_eff_val(theirs)
+    if target:
+        return target.uid
+    mine = [c for c in cands if c.owner == me]
+    pool = mine
+    if req.get("intent") == "return":
+        source_uid = req.get("sourceUid")
+        others = [c for c in mine if c.uid != source_uid]
+        if others:
+            pool = others
+    m = _min_by_eff_val(pool)
+    return m.uid if m else (cands[0].uid if cands else None)
+
+
+def choose_card(g, req):
+    """chooseCard 프롬프트(카드 1장 선택) 응답. req["intent"]로 분기하며,
+    없는 intent는 "상대의 가장 강한 카드 우선, 없으면 내 것 중 최강,
+    그래도 없고 선택적이면 포기"로 처리한다(범용 기본 분기)."""
+    chooser = req["chooser"]
+    cands = [g.cards_by_uid[u] for u in (req.get("candidates") or [])
+             if u in g.cards_by_uid]
+    if not cands:
+        return None
+
+    if req.get("fromHand"):
+        cands_sorted = sorted(cands, key=lambda c: c.value)
+        if req.get("intent") == "play":
+            # 손패에서 '낼' 카드를 고르는 상황(버리기/주기가 아님)이라
+            # 반대로 최고값을 우선한다 -- 버리기/주기라면 최저값이 맞지만,
+            # '낼' 카드를 고를 때 그대로 적용하면 항상 제일 약한 카드만
+            # 내게 되므로 intent="play"인 경우만 구분해서 처리한다.
+            return cands_sorted[-1].uid
+        return cands_sorted[0].uid
+
+    intent = req.get("intent")
+    if intent in ("delete", "flip"):
+        return _choose_card_delete_or_flip(g, chooser, cands, intent, req)
+    if intent in ("return", "move"):
+        return _choose_card_return_or_move(g, chooser, cands, req)
+
+    mine = [c for c in cands if c.owner == chooser]
+    theirs = [c for c in cands if c.owner != chooser]
+    target = _max_by_eff_val(theirs) or _max_by_eff_val(mine)
+    if not target and req.get("optional"):
+        return None
+    return target.uid if target else cands[0].uid
+
+
+def choose_line(g, req):
+    """chooseLine 프롬프트(라인 1~3 중 선택) 응답. intent별 채점(4갈래):
+    compile은 내 값이 가장 큰 라인, delete는 상대 값+위협도 가중,
+    play/move는 내 값 - 상대 값*0.3, 그 외(return 포함, 전용 분기를
+    따로 두지 않음)는 내 값이 가장 큰 라인."""
+    me = req["chooser"]
+    cands = req.get("candidates") or []
+    if not cands:
+        return None
+    intent = req.get("intent")
+    o = _other(me)
+
+    def best(scorer):
+        b, bs = None, None
+        for l in cands:
+            s = scorer(l)
+            if bs is None or s > bs:
+                bs, b = s, l
+        return b
+
+    if intent == "compile":
+        return best(lambda l: g.line_value(me, l))
+    if intent == "delete":
+        def score_delete(l):
+            t = _line_threat(g, me, l)
+            bonus = 12 if t == 2 else (4 if t == 1 else 0)
+            return g.line_value(o, l) + bonus
+        return best(score_delete)
+    if intent in ("play", "move"):
+        return best(lambda l: g.line_value(me, l) - g.line_value(o, l) * 0.3)
+    return best(lambda l: g.line_value(me, l))
+
+
+def choose_hand_cards(g, req):
+    """chooseHandCards 프롬프트(캐시 정리 등, 손패에서 N장) 응답 -- 값이
+    가장 낮은 카드부터 버린다."""
+    hand = g.players[req["player"]]["hand"]
+    pool = sorted(hand, key=lambda c: c.value)
+    n = req.get("count", 1)
+    return [c.uid for c in pool[:n]]
+
+
+def answer_rearrange(g, req):
+    """rearrange 프롬프트(Chaos_1/Water_2/Psychic_2류 강제 전체 재배열)
+    응답. 규칙상 반드시 순서가 바뀌어야 한다. target이 나 자신이 아니면
+    (상대에게 강제하는 경우) 상대의 가장 강한 미완료 라인의 프로토콜을
+    빼내고, 자신에게 강제되는 경우(피할 수 없음)는 가장 덜 아픈 스왑(값이
+    가장 낮은 두 라인끼리)을 고른다. plan_rearrange()(Control 소비 시
+    재배치 계획)와는 다른 프롬프트/다른 함수이니 혼동하지 말 것."""
+    me = req["chooser"]
+    target = req.get("target") or me
+
+    if target != me:
+        best_l, best_v = None, None
+        for l in (1, 2, 3):
+            if not g.players[target]["compiled"][l]:
+                v = g.line_value(target, l)
+                if best_v is None or v > best_v:
+                    best_v, best_l = v, l
+        best_l = best_l or 1
+        low_l, low_v = None, None
+        for l in (1, 2, 3):
+            if l != best_l:
+                v = g.line_value(target, l)
+                if low_v is None or v < low_v:
+                    low_v, low_l = v, l
+        a, b = best_l, low_l
+    else:
+        lanes = sorted((1, 2, 3), key=lambda l: g.line_value(target, l))
+        a, b = lanes[0], lanes[1]
+
+    if not a or not b or a == b:
+        a, b = 1, 2
+    order = {1: 1, 2: 2, 3: 3}
+    order[a], order[b] = order[b], order[a]
+    return order
+
+
+# 예/아니오 프롬프트는 언어 독립적인 intent 태그로 온다(engine.py의
+# _ask 호출부에서 부여). 우리 엔진에 실제로 등장하는 intent만 담았고
+# 각각 카드 문맥을 직접 대조해서 판단했다. 목록에 없는 태그는 전부
+# 보수적으로 거절한다(불확실하면 손해를 피하는 쪽을 기본값으로).
+_YESNO_ACCEPT = {
+    "give": True,           # Love_1 종료: 상대에게 1장 주고 2장 뽑기(순 카드 이득)
+    "move": True,           # 자기 카드 재배치는 대체로 안전/유익
+    "shuffleTrash": True,   # Clarity_4/Time_2: 버림더미 재활용은 공짜 자원
+    "playRevealed": True,   # Luck_0: 공개된 카드를 그대로 플레이는 공짜 플레이
+    "playFaceDown": True,   # War_3: 공짜 뒷면 템포 플레이
+    # 아래는 전부 자기 손해를 대가로 하는 선택이라 거절이 기본값
+    # (discardToFlip/drawThenDelete/flip/flipSelf/discardTopDeck 전부
+    # 즉시 확인 가능한 보상이 없어 보수적으로 거절하기로 판단함).
+}
+
+
+def yesno(g, req):
+    return _YESNO_ACCEPT.get(req.get("intent")) is True
+
+
+# 두 선택지 중 고정으로 선호하는 답이 있는 chooseOption(예/아니오가 아니라
+# 명시적 버튼 선택으로 바뀐 것들). intent마다 어느 쪽이 더 안전/유익한지
+# 직접 판단해서 채웠다(shiftOrFlip은 "이동"이 대체로 안전하다는 원칙 적용).
+_OPTION_PREFER = {
+    "flipOrDraw": "draw",         # Unity_0: 뽑기가 안전한 카드 우위
+    "discardOrFlip": "flip",      # Spirit_1: 손패 쓰는 것보다 자기 자신을 뒤집는 게 저렴
+    "flipOrMove": "flip",         # Light_2: 공개된 카드를 뒤집기
+    "discardOrDelete": "discard", # Corruption_6: 자기 제거보다 카드 1장 버리기
+    "faceChoice": "up",           # 효과 발동을 위해 앞면
+    "shiftOrFlip": "shift",       # Fear_0: move류와 같은 원칙 -- 이동이 대체로 안전
+}
+
+
+def choose_option(g, req):
+    """chooseOption 프롬프트 응답. 고정 선호가 있는 intent는 그걸 쓰고,
+    "stateNumber"(Luck_0)/"stateProtocol"(Luck_3)은 실제로 적중 확률을
+    높이려고 해당 덱 구성을 세어 가장 흔한 값/프로토콜을 고른다
+    (stateNumber는 자기 덱, stateProtocol은 상대 덱을 보는 것만 다르고
+    같은 원리). 그 외에는 g.aux_rng로 무작위 선택 -- 게임 메커니즘
+    스트림과 무관한 "AI 숙고용" 잡음이라는 엔진의 기존 계약에 맞춰
+    파이썬 전역 random 대신 이걸 쓴다."""
+    cands = req.get("candidates") or []
+    if not cands:
+        return None
+    intent = req.get("intent")
+    pref = _OPTION_PREFER.get(intent)
+    if pref is not None and pref in cands:
+        return pref
+
+    me = req.get("chooser")
+    if intent == "stateNumber" and me:
+        count = {}
+        for c in g.players[me]["deck"]:
+            count[c.value] = count.get(c.value, 0) + 1
+        best, best_n = None, None
+        for v in cands:
+            n = count.get(v, 0)
+            if best_n is None or n > best_n:
+                best_n, best = n, v
+        return best
+    if intent == "stateProtocol" and me:
+        o = _other(me)
+        count = {}
+        for c in g.players[o]["deck"]:
+            count[c.proto] = count.get(c.proto, 0) + 1
+        best, best_n = None, None
+        for v in cands:
+            n = count.get(v, 0)
+            if best_n is None or n > best_n:
+                best_n, best = n, v
+        return best
+
+    idx = g.aux_rng(len(cands)) - 1  # aux_rng는 1..n 관례
+    return cands[idx]

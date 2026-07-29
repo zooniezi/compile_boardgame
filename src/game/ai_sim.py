@@ -5,8 +5,6 @@
 계산하게 된다.
 
 순수 함수, 엔진 상태 조작은 Engine 메서드를 통해서만.
-
-포팅 원본: ai_sim.lua
 """
 
 import random
@@ -51,7 +49,7 @@ def determinize(sim, pi, salt=0):
     rnd = random.Random(base)
 
     def rand_index(n):
-        # Lua의 rnd(n) -> 1..n과 동일한 관례 (1-based)
+        # 엔진 rng 계약과 동일하게 1..n을 반환 (1-based)
         return rnd.randint(1, n)
 
     opp_p = sim.players[o]

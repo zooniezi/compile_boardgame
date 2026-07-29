@@ -5,8 +5,6 @@
         참고). None/빈 값 = 모든 세트.
   mode: "standard" = 그 세트들의 전체 풀
         "blind"    = 그중 무작위 BLIND_SIZE개
-
-포팅 원본: draftpool.lua
 """
 
 import random

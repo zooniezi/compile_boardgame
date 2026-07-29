@@ -16,8 +16,6 @@ AI를 고치고 "좀 나아진 것 같다"는 감각은 믿을 수 없다. 10판
 
     # 커맨드라인에서 (모듈경로:클래스명)
     python3 scripts/arena.py src.game.ai_random:RandomAI src.game.ai_random:RandomAI 500
-
-포팅 원본 없음 -- Lua 원본의 scripts/ai_arena.lua에 대응하는 자체 구현.
 """
 
 import importlib

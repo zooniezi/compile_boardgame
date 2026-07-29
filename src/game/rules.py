@@ -1,7 +1,4 @@
-"""게임 전역 공통 상수 (single source of truth).
-
-포팅 원본: rules.lua
-"""
+"""게임 전역 공통 상수 (single source of truth)."""
 
 HAND_SIZE = 5
 COMPILE_THRESHOLD = 10

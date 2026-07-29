@@ -7,8 +7,6 @@
 {kind: "anim"} 메시지를 큐에 넣고 확인(advance_anim)이 올 때까지 블로킹한다.
 메인 스레드(=pygame 루프)는 절대 블로킹되지 않고, 사람 턴과 AI 턴이 완전히
 동일한 코드 경로를 탄다.
-
-포팅 원본: engine.lua
 """
 
 import random
@@ -42,7 +40,7 @@ def _other(player):
 
 def _shuffle(seq, rng):
     """Fisher-Yates 셔플. rng(n)은 1..n 사이의 정수를 반환해야 한다
-    (Lua 원본과 동일한 난수 계약을 유지해 결정론적 진행을 보장)."""
+    (엔진 전체가 공유하는 난수 계약을 지켜야 결정론적 진행이 보장된다)."""
     for i in range(len(seq), 1, -1):
         j = rng(i)
         seq[i - 1], seq[j - 1] = seq[j - 1], seq[i - 1]

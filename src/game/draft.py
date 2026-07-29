@@ -13,8 +13,6 @@ P1 pick2 · P2 pick1  -> 각 플레이어가 최종적으로 3장씩 픽; ban은
     ok, err = d.apply(player, proto_id)
     if d.done():
         p1, p2 = d.result()
-
-포팅 원본: draft.lua
 """
 
 # 표준 밴픽 순서. 단일 진실 공급원(화면/서버가 공유).
@@ -43,7 +41,7 @@ class Draft:
         self.owner = {}          # id -> 1 | 2 | "ban"
         self.picks = {1: [], 2: []}  # 플레이어별, 픽한 순서대로
         self.steps = steps if steps is not None else STEPS
-        self.step_idx = 0  # 0-based (Lua는 1-based)
+        self.step_idx = 0  # 0-based 인덱스
         self.remaining = self.steps[0]["count"] if self.steps else 0
 
     def available(self):
