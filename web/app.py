@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.game.ai_random import RandomAI
 from src.game.ai_heuristic import HeuristicAI
+from src.game.ai_ismcts_learned import ISMCTSLearnedAI
 from src.game.engine import Engine
 from src.game import protocols as Protocols
 from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO, PROTOCOL_TAGLINE, PROTOCOL_VERBS
@@ -255,7 +256,8 @@ def new_game():
     data = request.get_json(force=True) or {}
     mode = data.get("mode", "hotseat")  # "hotseat" | "vs_ai"
     ai_side = data.get("aiSide", 2)
-    # "random"(왕초보) | "heuristic"(초보). 모르는 값이 오면 안전하게 랜덤.
+    # "random"(왕초보) | "heuristic"(초보) | "ismcts"(중급). 모르는 값이
+    # 오면 안전하게 랜덤.
     ai_difficulty = data.get("aiDifficulty", "random")
     first_player = data.get("firstPlayer", random.choice([1, 2]))
 
@@ -268,7 +270,11 @@ def new_game():
     ai2 = mode == "vs_ai" and ai_side == 2
 
     def make_ai_module():
-        return HeuristicAI() if ai_difficulty == "heuristic" else RandomAI()
+        if ai_difficulty == "ismcts":
+            return ISMCTSLearnedAI()
+        if ai_difficulty == "heuristic":
+            return HeuristicAI()
+        return RandomAI()
 
     ai_modules = {}
     if ai1:
@@ -325,4 +331,8 @@ def legal_actions(game_id, pi):
 
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # threaded=True: "ismcts" 난이도는 결정 1번에 1초 안팎 걸릴 수 있어서
+    # (ai_train_pipeline.md Phase 3 실측), 단일 스레드로 두면 그동안 다른
+    # 접속자의 요청까지 전부 막힌다. 게임별로 이미 lock을 쓰고 있어
+    # 동시 접근 자체는 안전하다.
+    app.run(debug=True, port=5000, threaded=True)

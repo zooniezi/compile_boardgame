@@ -9,7 +9,10 @@
 
 import random
 
+import numpy as np
+
 from src.game.rules import COMPILE_THRESHOLD
+from src.game.ai_features import extract, expand_features
 
 
 def _other(pi):
@@ -138,6 +141,44 @@ def evaluate(g, pi, w=None):
     elif g.control == o:
         s -= w["control"]
     return s
+
+
+_eval_weights_cache = {}
+
+
+def load_eval_weights(path):
+    """train_eval.py가 저장한 .npz(coef, intercept)를 읽어 evaluate_learned()의
+    eval_w로 바로 넘길 수 있는 (coef, intercept) 튜플로 반환한다. 같은 경로는
+    캐시해서 반복 로드를 피한다."""
+    if path not in _eval_weights_cache:
+        d = np.load(path)
+        _eval_weights_cache[path] = (d["coef"], float(d["intercept"][0]))
+    return _eval_weights_cache[path]
+
+
+def evaluate_learned(g, pi, w=None):
+    """학습된 로지스틱 회귀의 로짓(결정함수 값, sigmoid 적용 전)을 반환한다.
+    evaluate()와 마찬가지로 "클수록 좋음"이고 압축되지 않은 스칼라라서
+    ai_ismcts.py의 tanh(score/eval_scale) 정규화에 그대로 끼워 넣을 수 있다
+    (확률을 반환하면 이미 0~1로 압축돼 있어 신호가 거의 사라짐).
+
+    w는 반드시 load_eval_weights()가 반환한 (coef, intercept)여야 한다.
+    coef 길이가 원본 특징 수(feature_count())와 다르면 -- 즉 교차항까지
+    확장해서 학습한 가중치라면 -- expand_features()를 자동으로 적용한다
+    (Lua의 evaluateLearned가 "학습된 가중치 개수로 plain vs 확장 모델을
+    고른다"는 것과 동일한 방식, ai_train_pipeline.md §1.3 참고)."""
+    if w is None:
+        raise ValueError(
+            "evaluate_learned은 eval_w=load_eval_weights(path)와 함께 써야 함")
+    if g.winner == pi:
+        return 1e6
+    if g.winner:
+        return -1e6
+    coef, intercept = w
+    x = extract(g, pi)
+    if len(coef) != len(x):
+        x = expand_features(x)
+    return float(np.dot(coef, x) + intercept)
 
 
 # ---------------------------------------------------------------------------

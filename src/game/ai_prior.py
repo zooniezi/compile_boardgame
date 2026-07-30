@@ -164,7 +164,7 @@ TAGS["Speed_4"] = {"prior": 0.5}  # 상대 뒷면 카드 1장 이동(교란/유�
 TAGS["Speed_5"] = {"self_discard": 1}
 
 # --- LIFE ---
-TAGS["Life_0"] = {"deck_plays": 2, "ongoing": True}  # 자기 라인마다 뒷면 공짜 플레이 + End 자기삭제 방어
+TAGS["Life_0"] = {"deck_plays": {"eligible": "own_line"}, "ongoing": True}  # 내 카드 있는 라인마다 -- 고정 2가 아님
 TAGS["Life_1"] = {"flip": [{"n": 1}, {"n": 1}]}
 TAGS["Life_2"] = {"draw": 1, "flip": {"n": 1, "may": True}}
 TAGS["Life_3"] = {"ongoing": True}  # onCovered: 덮이기 전 다른 라인에 뒷면 플레이
@@ -250,7 +250,7 @@ TAGS["Peace_5"] = {"self_discard": 1}
 TAGS["Peace_6"] = {"ongoing": True}  # 손패 2장 이상이면 자기 뒤집기(조건부)
 
 # --- SMOKE ---
-TAGS["Smoke_0"] = {"deck_plays": 2}
+TAGS["Smoke_0"] = {"deck_plays": {"eligible": "facedown_line"}}  # 뒷면 카드 있는 라인마다 -- 고정 2가 아님
 TAGS["Smoke_1"] = {"flip": {"n": 1, "owner": "own"}}  # + 선택적 이동
 TAGS["Smoke_2"] = {"ongoing": True}  # 패시브: 이 라인 값 += 이 라인 뒷면 카드 수
 TAGS["Smoke_3"] = {"extra_play": True}  # 뒷면 카드 있는 라인에 손패 카드 추가로 뒷면 플레이
@@ -441,6 +441,24 @@ def _flip_prior(g, pi, spec):
     return sum(cands[:n])
 
 
+def _deck_plays_prior(g, pi, spec):
+    """deck_plays 효과 1건의 기대 가치. spec이 그냥 숫자면 무조건 n장을
+    뒷면으로 내는 카드(예: Water_1 -- 항상 정확히 2라인, 조건 없음).
+    spec이 dict면 "그 조건을 만족하는 라인마다 1장씩"인 카드(Smoke_0/Life_0)
+    -- 고정 개수가 아니라 지금 판에서 실제로 몇 라인이 자격 있는지 세어야
+    정확하다(자격 라인이 0개면 실제로도 아무 일도 안 일어남)."""
+    if not isinstance(spec, dict):
+        return 1.0 * spec
+    pred = spec.get("eligible")
+    if pred == "facedown_line":  # Smoke_0: 뒷면 카드가 있는(양쪽 다 후보) 라인마다
+        n = sum(1 for l in (1, 2, 3) if g.facedown_in_line(l) > 0)
+    elif pred == "own_line":  # Life_0: 내 카드가 있는 라인마다
+        n = sum(1 for l in (1, 2, 3) if g.players[pi]["stacks"][l])
+    else:
+        n = spec.get("n", 0)
+    return 1.0 * n
+
+
 # ---------------------------------------------------------------------------
 # 진입점 -- 카드 하나의 효과 전체를 지금 상황에 비추어 채점
 # ---------------------------------------------------------------------------
@@ -474,9 +492,11 @@ def effect_prior(g, pi, card, line=None):
     if tag.get("refresh_self"):
         s += 0.6 * (5 - hand_after)
     if tag.get("deck_plays"):
-        # 손패를 안 쓰고 덱에서 뒷면으로 내는 공짜 판 진전 (Water_1/Life_0 등).
-        # 뒷면 카드는 항상 값 2로 취급되니 그 정도 기여로 어림.
-        s += 1.0 * tag["deck_plays"]
+        # 손패를 안 쓰고 덱에서 뒷면으로 내는 공짜 판 진전 (Water_1/Smoke_0/
+        # Life_0 등). 뒷면 카드는 항상 값 2로 취급되니 그 정도 기여로 어림 --
+        # 조건부 카드(Smoke_0/Life_0)는 _deck_plays_prior가 지금 판에서
+        # 실제 자격 라인 수를 센다(고정값이 아님).
+        s += _deck_plays_prior(g, pi, tag["deck_plays"])
     if tag.get("extra_play"):
         # 손패에서 카드를 하나 더 낼 기회 -- 손이 있어야 의미 있음.
         if g.players[pi]["hand"]:
@@ -638,8 +658,18 @@ def score_action(g, pi, action):
         score += 12
     if g.players[pi]["compiled"][line]:
         score -= 5
+        # 자기대국 데이터 생성 전용 훅(ai_howtodiversity.md). 프로덕션에서는
+        # g.ai_dump_bias 자체가 없어(Engine이 선언 안 함) getattr가 None을
+        # 반환해 이 블록이 스킵된다 -- 실제 플레이엔 절대 영향 없음.
+        dump_bias = getattr(g, "ai_dump_bias", None)
+        if dump_bias and dump_bias.get(pi):
+            score += dump_bias[pi]
     if face_up:
         score += 0.3 + effect_prior(g, pi, card, line)
+        # 위와 동일한 계약의 훅 -- 앞/뒷면 결정의 여백만 흔든다.
+        style_bias = getattr(g, "ai_style_bias", None)
+        if style_bias and style_bias.get(pi):
+            score += style_bias[pi]
     else:
         score += 0.5
     if opp_line - new_mine >= 6:

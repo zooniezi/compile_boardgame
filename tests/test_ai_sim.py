@@ -4,9 +4,13 @@
 
 import random
 
+import numpy as np
+import pytest
+
 from src.game.engine import Engine
 from src.game.ai_random import RandomAI
-from src.game.ai_sim import determinize, evaluate, pick_best
+from src.game.ai_sim import determinize, evaluate, pick_best, evaluate_learned, load_eval_weights
+from src.game.ai_features import extract, expand_features, feature_count
 
 
 def _driven_engine(seed, ai, steps=500):
@@ -136,3 +140,54 @@ def test_pick_best_does_not_mutate_the_live_engine():
 
     _driven_engine(seed=555, ai=OnceSpyAI())
     assert result.get("before") == result.get("after")
+
+
+def _fake_weights(n, seed=0):
+    rng = np.random.RandomState(seed)
+    return rng.randn(n).astype(np.float64), float(rng.randn())
+
+
+def test_evaluate_learned_matches_manual_dot_product():
+    e = _driven_engine(seed=11, ai=RandomAI())
+    coef, intercept = _fake_weights(feature_count())
+    x = extract(e, 1)
+    expected = float(np.dot(coef, x) + intercept)
+    assert evaluate_learned(e, 1, (coef, intercept)) == pytest.approx(expected)
+
+
+def test_evaluate_learned_auto_expands_when_coef_is_wider():
+    """coef 길이가 원본 특징 수보다 크면 -- 즉 교차항까지 학습한
+    가중치라면 -- expand_features()를 자동으로 적용해야 한다."""
+    e = _driven_engine(seed=12, ai=RandomAI())
+    x = extract(e, 1)
+    expanded_len = len(expand_features(x))
+    coef, intercept = _fake_weights(expanded_len, seed=1)
+    expected = float(np.dot(coef, expand_features(x)) + intercept)
+    assert evaluate_learned(e, 1, (coef, intercept)) == pytest.approx(expected)
+
+
+def test_evaluate_learned_requires_weights():
+    e = _driven_engine(seed=13, ai=RandomAI())
+    with pytest.raises(ValueError):
+        evaluate_learned(e, 1, None)
+
+
+def test_evaluate_learned_short_circuits_on_decided_winner():
+    e = _driven_engine(seed=14, ai=RandomAI())
+    coef, intercept = _fake_weights(feature_count())
+    e.winner = 1
+    assert evaluate_learned(e, 1, (coef, intercept)) == 1e6
+    assert evaluate_learned(e, 2, (coef, intercept)) == -1e6
+
+
+def test_load_eval_weights_roundtrips_and_caches(tmp_path):
+    coef = np.array([0.1, -0.2, 0.3])
+    intercept = np.array([0.5])
+    path = str(tmp_path / "w.npz")
+    np.savez(path, coef=coef, intercept=intercept)
+
+    w1 = load_eval_weights(path)
+    w2 = load_eval_weights(path)  # 캐시 재사용 -- 같은 객체여야 함
+    assert w1 is w2
+    assert np.allclose(w1[0], coef)
+    assert w1[1] == pytest.approx(0.5)

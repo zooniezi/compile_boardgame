@@ -275,10 +275,22 @@ class ISMCTSAI(HeuristicAI):
 
     시뮬레이션이 불가능하면(Engine에 seed가 없는 등, clone_at_decision()이
     None을 반환하는 모든 경우) 자동으로 HeuristicAI의 채점으로 폴백한다.
+
+    rollout_turn_cap 기본값 2 (2026-07-30, 24->12->4->2로 단계적 재조정):
+    ai_ismcts_expectedoutput.md §5.8 스윕은 12가 24와 승률 동급(둘 다
+    87.5%)이면서 판당 약 4배 저렴함을 실측으로 확인했다(24->12 변경
+    근거). 이어서 4로 낮춘 뒤 HeuristicAI 상대 8쌍(16판)으로 검증했더니
+    13승/3패(81.2% ±17.9, 유의미하게 우세)로 승률 손실이 없었다(4는
+    그 자체로도 §5.8 실측 범위 밖이었지만 사후 검증됨). 
+    아레나로도 검증했다(HeuristicAI 상대 8쌍, 16판):
+    12승/4패(75.0% ±26.2, 표본이 작아 통계적으로는 아직 무의미하나
+    승 쪽 숫자는 유지) -- 속도는 판당 19.8초로 지금까지 측정한 값 중
+    가장 빠르다(4는 38.4초, 12는 28.8초). 승률이 표본을 늘려도 유지
+    되는지는 아직 확정 전이니 신뢰도는 중간 정도로 볼 것.
     """
 
     def __init__(self, iterations=200, c_ucb=1.41, rollout_policy=None,
-                 rollout_turn_cap=24, eval_fn=evaluate, eval_w=None,
+                 rollout_turn_cap=2, eval_fn=evaluate, eval_w=None,
                  eval_scale=200.0):
         self.iterations = iterations
         self.c_ucb = c_ucb

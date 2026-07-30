@@ -3,9 +3,11 @@
 180장 전부 채워짐 (Aux1 18 + Main1 72 + Main2 72 + Aux2 18).
 """
 
+import pytest
+
 from src.game.carddefs import DEFS
 from src.game.engine import Engine
-from src.game.ai_prior import TAGS, effect_prior, defusable_threat, plan_rearrange
+from src.game.ai_prior import TAGS, effect_prior, defusable_threat, plan_rearrange, score_action
 
 
 def test_all_180_cards_have_a_tag():
@@ -169,3 +171,106 @@ def test_plan_rearrange_wired_into_spend_control_via_ai_module():
     e.spend_control(1)
     assert e.control is None  # 제어권은 항상 중립으로 반납됨
     assert e.players[2]["protocols"] != before  # 실제로 재배치가 적용됨
+
+
+# ---------------------------------------------------------------------------
+# score_action의 자기대국 다양성 훅 (ai_style_bias/ai_dump_bias) --
+# ai_howtodiversity.md Phase A. 프로덕션 안전성(미설정 시 완전히 기존과
+# 동일)이 가장 중요한 불변식이라 이걸 직접 회귀 테스트로 박아둔다.
+# ---------------------------------------------------------------------------
+
+def test_score_action_dump_bias_absent_by_default_and_purely_additive():
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    e.players[1]["compiled"][1] = True  # dump 지점(이미 컴파일한 라인)이 걸리게
+    card = _card(e, "Water", 2, 1, face_up=False)
+    e.players[1]["hand"] = [card]
+    action = {"kind": "play", "uid": card.uid, "line": 1, "faceUp": False}
+
+    assert not hasattr(e, "ai_dump_bias")
+    baseline = score_action(e, 1, action)
+
+    e.ai_dump_bias = {1: 7.0, 2: -3.0}
+    assert score_action(e, 1, action) == pytest.approx(baseline + 7.0)
+
+
+def test_score_action_style_bias_absent_by_default_and_purely_additive():
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    card = _card(e, "Water", 2, 1, face_up=True)
+    e.players[1]["hand"] = [card]
+    action = {"kind": "play", "uid": card.uid, "line": 1, "faceUp": True}
+
+    assert not hasattr(e, "ai_style_bias")
+    baseline = score_action(e, 1, action)
+
+    e.ai_style_bias = {1: -2.5, 2: 2.5}
+    assert score_action(e, 1, action) == pytest.approx(baseline - 2.5)
+
+
+def test_score_action_bias_only_affects_the_targeted_seat():
+    """좌석 2에만 편향을 설정했으면 좌석 1의 채점은 그대로여야 한다."""
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    card = _card(e, "Water", 2, 1, face_up=True)
+    e.players[1]["hand"] = [card]
+    action = {"kind": "play", "uid": card.uid, "line": 1, "faceUp": True}
+
+    baseline = score_action(e, 1, action)
+    e.ai_style_bias = {2: 5.0}  # 좌석 1엔 값 없음
+    assert score_action(e, 1, action) == pytest.approx(baseline)
+
+
+def test_score_action_style_bias_does_not_affect_facedown_plays():
+    """style 편향은 face_up 분기 안에서만 더해져야 한다 -- 뒷면 플레이 채점엔
+    영향을 주면 안 된다."""
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    card = _card(e, "Water", 2, 1, face_up=False)
+    e.players[1]["hand"] = [card]
+    action = {"kind": "play", "uid": card.uid, "line": 1, "faceUp": False}
+
+    baseline = score_action(e, 1, action)
+    e.ai_style_bias = {1: 999.0}
+    assert score_action(e, 1, action) == pytest.approx(baseline)
+
+
+# ---------------------------------------------------------------------------
+# Smoke_0/Life_0의 조건부 deck_plays -- 실제 자격 라인 수만큼만 값을 매겨야
+# 한다(고정값 버그: 자격 라인이 0개인데도 항상 +2.0을 주던 것을 수정).
+# ---------------------------------------------------------------------------
+
+def test_smoke_0_effect_prior_scales_with_eligible_facedown_lines():
+    e = Engine(protocols1=["Smoke", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    c = _card(e, "Smoke", 0, 1)
+
+    # 뒷면 카드가 보드에 하나도 없으면 -- 실제로도 아무 일도 안 일어남 -> 0점
+    assert effect_prior(e, 1, c) == 0.0
+
+    # 라인1에 뒷면 카드 1장(소유자 무관) -> 자격 라인 1개
+    fd1 = _card(e, "Water", 3, 2, face_up=False)
+    e.players[2]["stacks"][1].append(fd1)
+    assert effect_prior(e, 1, c) == pytest.approx(1.0)
+
+    # 라인2에도 뒷면 카드 추가 -> 자격 라인 2개
+    fd2 = _card(e, "Ice", 1, 1, face_up=False)
+    e.players[1]["stacks"][2].append(fd2)
+    assert effect_prior(e, 1, c) == pytest.approx(2.0)
+
+
+def test_life_0_effect_prior_scales_with_own_nonempty_lines():
+    """Life_0은 ongoing 태그도 있어 deck_plays가 0이어도 기본 0.8점은
+    남는다 -- deck_plays 쪽만 실제 라인 수만큼 늘어나는지 그 증분으로 확인."""
+    e = Engine(protocols1=["Life", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    c = _card(e, "Life", 0, 1)
+
+    base = effect_prior(e, 1, c)  # 자격 라인 0개 -> ongoing(0.8)만
+    assert base == pytest.approx(0.8)
+
+    mine = _card(e, "Water", 3, 1, face_up=True)
+    e.players[1]["stacks"][1].append(mine)
+    assert effect_prior(e, 1, c) == pytest.approx(base + 1.0)
+
+
+def test_water_1_unconditional_deck_plays_still_flat_two():
+    """무조건부 deck_plays(정수 그대로)는 기존처럼 보드 상태와 무관하게
+    고정값이어야 한다 -- 이번 수정이 조건부 카드 케이스만 건드렸는지 확인."""
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    c = _card(e, "Water", 1, 1)
+    assert effect_prior(e, 1, c) == pytest.approx(2.0)
