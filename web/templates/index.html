@@ -8,8 +8,18 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="{{ asset_url('css/style.css') }}">
+<script>
+  // 테마를 CSS/첫 페인트 전에 정해둬야 "어두운 테마로 잠깐 그려졌다가 밝은
+  // 테마로 바뀌는" 깜빡임(FOUC)이 안 생긴다.
+  (function () {
+    var t = localStorage.getItem("compileTheme") || "dark";
+    document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
 </head>
 <body>
+
+<button id="theme-toggle-btn" class="theme-toggle-btn" type="button" aria-label="테마 전환"></button>
 
 <div id="setup-screen" class="screen">
   <div class="setup-card">
@@ -39,7 +49,7 @@
     <div id="setup-rest" class="hidden">
       <div id="ai-difficulty-block" class="hidden">
         <p class="setup-step-label">AI 난이도는요?</p>
-        <div class="mode-select">
+        <div class="mode-select three">
           <button class="mode-btn" data-difficulty="random">
             <span class="mode-title">왕초보</span>
             <span class="mode-desc">완전 무작위</span>
@@ -254,7 +264,8 @@
 
 <script id="proto-data" type="application/json">
 {
-  "colors": {{ proto_colors | tojson }},
+  "colorsDark": {{ proto_colors_dark | tojson }},
+  "colorsLight": {{ proto_colors_light | tojson }},
   "values": {{ proto_values | tojson }},
   "cardText": {{ card_text | tojson }},
   "namesKo": {{ names_ko | tojson }},

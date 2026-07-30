@@ -12,6 +12,7 @@
 실행: python3 web/app.py  (프로젝트 루트에서)
 """
 
+import colorsys
 import random
 import sys
 import threading
@@ -185,14 +186,41 @@ def _get_game(game_id):
     return entry
 
 
+def _pastel_variant(rgb):
+    """protocols.py의 원색(검은 배경용 네온)을 밝은/파스텔 테마에서도 쓸 수
+    있게 변환한다. 색상(H)은 그대로 둬서 "이 프로토콜은 이 색"이라는 정체성은
+    유지한다.
+
+    채도(S)는 원래 값에 비례시키지 않고 좁은 목표 띠(0.30~0.50)로 다시
+    맞춘다 -- 원래 채도를 그대로 비례 축소하면 역효과가 난다: Clarity/Peace
+    처럼 "아주 밝아서 눈에는 옅어 보이지만 HSL 채도 자체는 이미 높은" 색을
+    그대로 어둡게(밝은 배경에서 테두리/글자로 쓸 수 있게)만 만들면, 밝기만
+    빠지고 채도는 유지돼 오히려 쨍한 색이 튀어나온다. 채도를 아예 좁은
+    파스텔 띠로 다시 맞춰야 "같은 계열의 파스텔"처럼 고르게 느껴진다.
+
+    명도(L)도 밝은 배경 위 테두리/글자로 쓸 수 있는 중간 밝기 띠
+    (0.36~0.56)로 누르되, (l - 0.5) 항으로 원래 밝기 순서를 약하게나마
+    보존한다(예: 원래 더 밝았던 프로토콜이 파스텔 버전에서도 상대적으로
+    더 밝게 남는다)."""
+    r, g, b = rgb
+    h, l, s = colorsys.rgb_to_hls(r, g, b)
+    s2 = 0.30 + 0.20 * min(s, 1.0)
+    l2 = max(0.36, min(0.56, 0.44 + 0.08 * (l - 0.5)))
+    return colorsys.hls_to_rgb(h, l2, s2)
+
+
+def _rgb_css(rgb):
+    r, g, b = rgb
+    return f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+
+
 @app.route("/")
 def index():
-    proto_colors = {
-        p: f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
-        for p, (r, g, b) in Protocols.COLOR.items()
-    }
+    proto_colors_dark = {p: _rgb_css(rgb) for p, rgb in Protocols.COLOR.items()}
+    proto_colors_light = {p: _rgb_css(_pastel_variant(rgb)) for p, rgb in Protocols.COLOR.items()}
     proto_values = {p: list(v) for p, v in Protocols.VALUES.items()}
-    return render_template("index.html", proto_colors=proto_colors, proto_values=proto_values,
+    return render_template("index.html", proto_colors_dark=proto_colors_dark,
+                            proto_colors_light=proto_colors_light, proto_values=proto_values,
                             card_text=CARD_TEXT, names_ko=PROTOCOL_NAME_KO,
                             proto_tagline=PROTOCOL_TAGLINE, proto_verbs=PROTOCOL_VERBS,
                             proto_list=list(Protocols.PROTOCOL_LIST),

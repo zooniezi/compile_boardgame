@@ -48,6 +48,28 @@
   --radius: 6px;
 }
 
+/* 밝은/파스텔 테마 -- "컴파일러 터미널" 콘셉트는 그대로 두고 어두운
+   배경/네온 텍스트만 밝은 종이 톤 + 차분한 세이지그린으로 바꾼다. 프로토콜
+   색은 app.py의 _pastel_variant()가 색상(H)은 유지한 채 밝은 배경에서도
+   읽히게 채도/명도만 다시 맞춘 별도 팔레트를 만들어 PROTO.colorsLight로
+   내려준다(app.js가 테마에 따라 골라 씀) -- 이 파일은 UI 크롬(배경/테두리/
+   기본 텍스트/포인트 색)만 담당. */
+:root[data-theme="light"] {
+  --bg-void: #ece5d6;
+  --bg-panel: #f5efe2;
+  --bg-panel-raised: #faf6ec;
+  --bg-card-back: #ffffff;
+  --line-hair: rgba(60, 45, 20, 0.12);
+  --phosphor: #17915f;
+  --phosphor-dim: #6fae8d;
+  --phosphor-glow: rgba(23, 145, 95, 0.18);
+  --amber: #b5720c;
+  --danger: #c62f47;
+  --text-hi: #2b2620;
+  --text-mid: #6b6255;
+  --text-dim: #a89f8f;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -65,6 +87,14 @@ body {
     repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, transparent 1px, transparent 2px);
 }
 
+/* 밝은 테마는 스캔라인 텍스처를 뺀다 -- 다크 테마의 "CRT 터미널" 질감이
+   종이 톤 배경 위에서는 지저분해 보이기만 하고, 파스텔 무드와도 안 맞는다.
+   대신 배경 감이 아예 밋밋해지지 않게 아주 옅은 세이지그린 글로우만 남긴다. */
+:root[data-theme="light"] body {
+  background-image:
+    radial-gradient(ellipse 80% 60% at 50% -10%, rgba(23,145,95,0.07), transparent);
+}
+
 .hidden { display: none !important; }
 
 button {
@@ -77,6 +107,32 @@ button {
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: #2a3038; border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #d8cfb9; }
+
+/* 테마 전환 버튼 -- 어느 화면(설정/드래프트/보드)에서든 항상 같은 자리에
+   있어야 해서 body 최상단에 고정 위치로 둔다. */
+.theme-toggle-btn {
+  position: fixed;
+  bottom: 84px; /* 보드 화면 하단의 프로토콜 벨트(.proto-belt)와 안 겹치게 */
+  right: 14px;
+  z-index: 40;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-hair);
+  background: var(--bg-panel-raised);
+  color: var(--text-mid);
+  transition: border-color .15s, color .15s;
+}
+.theme-toggle-btn:hover { border-color: var(--phosphor-dim); color: var(--text-hi); }
+.theme-toggle-btn::before {
+  content: "☀ 파스텔 모드";
+}
+:root[data-theme="light"] .theme-toggle-btn::before {
+  content: "● 다크 모드";
+}
 
 /* ==========================================================================
    화면 전환

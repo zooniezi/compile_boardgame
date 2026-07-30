@@ -10,6 +10,43 @@ const PROTO = JSON.parse(document.getElementById("proto-data").textContent);
 
 let gameId = null;
 let lastState = null;
+let lastDraftState = null;   // renderDraft()가 매번 받는 state -- 테마 전환 시 재렌더링용
+
+// ----------------------------------------------------------------------------
+// 테마(다크/파스텔) -- 프로토콜 색은 서버가 테마별로 두 세트(colorsDark/
+// colorsLight)를 미리 계산해 내려주고(같은 색상, 밝은 배경에 맞게 채도/명도만
+// 다시 맞춤 -- web/app.py의 _pastel_variant 참고), 여기서는 현재 테마에 맞는
+// 세트를 PROTO.colors가 가리키게만 바꿔준다. 나머지 UI 색(배경/테두리/기본
+// 텍스트)은 :root[data-theme] CSS 변수 전환만으로 자동 처리된다(style.css).
+// ----------------------------------------------------------------------------
+let currentTheme = document.documentElement.getAttribute("data-theme") || "dark";
+
+function applyProtoPaletteForTheme() {
+  PROTO.colors = currentTheme === "light" ? PROTO.colorsLight : PROTO.colorsDark;
+}
+applyProtoPaletteForTheme();
+
+function setTheme(theme) {
+  currentTheme = theme;
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem("compileTheme", theme);
+  applyProtoPaletteForTheme();
+  // 지금 보이는 화면을 새 팔레트로 다시 그린다 -- 진행 중인 게임/드래프트를
+  // 새로고침 없이 유지한 채로 프로토콜 색만 갱신하려는 것.
+  if (lastState) {
+    render(lastState);
+    // pending이 "input"일 때만 안전하게 다시 그릴 수 있다(renderPrompt는
+    // state.pending.req를 그냥 바로 읽어서, pending이 null/anim이면 던진다).
+    if (lastState.pending && lastState.pending.kind === "input") {
+      renderPrompt(lastState);
+    }
+  }
+  if (lastDraftState) renderDraft(lastDraftState);
+}
+
+document.getElementById("theme-toggle-btn").addEventListener("click", () => {
+  setTheme(currentTheme === "light" ? "dark" : "light");
+});
 let armedUid = null;         // "action" 진행 중 클릭으로 고른 손 카드
 let dragCtx = null;          // 드래그 중인 손 카드: {uid}
 let rearrangeOrder = null;
@@ -340,6 +377,7 @@ $("#draft-randomize-btn").addEventListener("click", async () => {
 });
 
 function renderDraft(state) {
+  lastDraftState = state;
   const cur = state.current;
   const stepsMeta = DRAFT_STEPS_META[state.mode] || DRAFT_STEPS_META.hotseat;
   const doneCount = Object.keys(state.owner).length;
@@ -468,6 +506,11 @@ async function handleState(state, mySeq) {
   if (state.pending.kind === "anim") {
     showPromptBar(false);
     const ev = state.pending.event || {};
+    // 지금 턴의 주인이 AI면 한 스텝 한 스텝을 더 오래 보여준다 -- 사람 턴은
+    // 이미 자기가 뭘 했는지 아니까 빠르게 지나가도 되지만, AI 턴은 그 사이에
+    // 무슨 일이 일어났는지 로그/보드를 읽을 시간이 따로 필요하다.
+    const turnPlayer = state.players[String(state.turn)];
+    const aiTurnPace = turnPlayer && turnPlayer.isAI ? 2.3 : 1;
     // 손패 공개는 흘러가버리면 놓치므로, 모달로 띄우고 닫을 때까지 진행을 멈춘다.
     if (ev.kind === "revealHand") {
       const cards = ((ev.i18n || {}).params || {}).cards || [];
@@ -482,12 +525,12 @@ async function handleState(state, mySeq) {
         await sleep(120);
       } else {
         animateProtocolSwap(ev.player, ev.moves);
-        const dur = Math.max(500, (state.pending.dur || 0.3) * 1000);
+        const dur = Math.max(500, (state.pending.dur || 0.3) * 1000) * aiTurnPace;
         await sleep(dur);
       }
     } else if (ev.kind === "compileStart" || ev.kind === "compileFlip") {
       animateCompileFill(ev.player, ev.line);
-      await sleep(950);
+      await sleep(950 * aiTurnPace);
     } else {
       // 리프레시로 인한 첫 뽑기 -- refresh()가 emit하는 "draw" 이벤트 중,
       // i18n.key가 "ev.refresh"인 게 바로 그 시작 신호(리프레시 전체를
@@ -495,7 +538,10 @@ async function handleState(state, mySeq) {
       if (ev.kind === "draw" && ev.i18n && ev.i18n.key === "ev.refresh") {
         showRefreshBanner(ev.player);
       }
-      const dur = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
+      const base = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
+      // AI 턴은 바닥값도 따로 올린다 -- base 자체가 아주 작은 이벤트(예:
+      // dur=0.3 미만)는 *2.3을 해도 여전히 눈 깜짝할 새에 지나갈 수 있어서.
+      const dur = turnPlayer && turnPlayer.isAI ? Math.max(650, base * aiTurnPace) : base;
       await sleep(dur);
     }
     const seq = ++requestSeq;
@@ -585,11 +631,16 @@ function showRefreshBanner(pi) {
   playBanner($("#refresh-banner"), $("#refresh-banner-text"), `${pName(pi)}의 리프레시`);
 }
 
-// 상단: "상대"(=지금 결정하는 사람이 아닌 쪽) 손패를, 내 손패와 동일한
-// 크기의 뒷면 카드로 표시 (5번 요청: 크기 통일).
+// 상단: "상대" 손패를, 내 손패와 동일한 크기의 뒷면 카드로 표시 (5번 요청:
+// 크기 통일). vs_ai 모드에서는 항상 AI 쪽을 "상대"로 고정한다 -- AI는
+// input pending 없이(prompt()에서 바로 inline 결정) 답하므로, AI 턴이
+// 진행되는 동안엔 state.pending이 "anim"이라 currentSelfPi()가
+// state.turn(=AI 자리)으로 폴백해서 "상대"가 거꾸로 사람 자신이 돼버리는
+// 문제가 있었다(그 순간엔 이미 아는 자기 손패가 표시됨). AI가 없는
+// hotseat에서는 기존처럼 "지금 결정하는 사람이 아닌 쪽"을 그대로 쓴다.
 function renderOppHandPreview(state) {
-  const self = currentSelfPi(state);
-  const opp = self === 1 ? 2 : 1;
+  const aiSeat = [1, 2].find((pi) => state.players[String(pi)].isAI);
+  const opp = aiSeat || (currentSelfPi(state) === 1 ? 2 : 1);
   const hand = state.players[String(opp)].hand;
   const box = $("#opp-hand-cards");
   box.innerHTML = "";
