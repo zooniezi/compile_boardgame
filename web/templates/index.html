@@ -26,6 +26,7 @@
     <h1 class="logo">COMPILE</h1>
     <p class="tagline">프로토콜을 컴파일하라.</p>
     <button id="goto-play-setup-btn" class="start-btn">게임 시작</button>
+    <button id="goto-tutorial-btn" class="icon-btn codex-btn-full">튜토리얼</button>
     <button id="codex-btn" class="icon-btn codex-btn-full">Compile Codex</button>
   </div>
 </div>
@@ -262,6 +263,11 @@
       <button id="win-newgame" class="start-btn">다시 하기</button>
     </div>
   </div>
+
+  <div class="tutorial-hint-box hidden" id="tutorial-hint-box">
+    <div class="tutorial-hint-text" id="tutorial-hint-text"></div>
+    <button id="tutorial-hint-next" class="tutorial-hint-next hidden">다음</button>
+  </div>
 </div>
 
 <script id="proto-data" type="application/json">
@@ -278,5 +284,6 @@
 }
 </script>
 <script src="{{ asset_url('js/app.js') }}"></script>
+<script src="{{ asset_url('js/tutorial.js') }}"></script>
 </body>
 </html>

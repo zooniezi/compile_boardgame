@@ -2302,7 +2302,7 @@ def _ambush_0_play(g, c):
 
 def _ambush_1_play(g, c):
     targets = g.cards_in_play(lambda x, pi, line: x.owner == c.owner and x.uid != c.uid
-                               and x.value in (0, 1))
+                               and _eff_val(x) in (0, 1))
     flipped = [0]
 
     def body():
@@ -2820,7 +2820,7 @@ def _nova_2_after_rearrange(g, c, actor, _ctx, _snap):
     # 움직였는지와는 무관.
     if actor != c.owner:
         return
-    _move_one(g, c.owner, lambda x, pi, line: not x.face_up,
+    _move_one(g, c.owner, lambda x, pi, line: not x.face_up and g.can_move(x),
               {"optional": True, "prompt": "뒷면 카드를 1장 이동할 수 있습니다", "intent": "move"})
 
 
@@ -2829,7 +2829,7 @@ def _nova_3_play(g, c):
     if not line:
         return
     count = len(g.players[c.owner]["stacks"][line])
-    _move_one(g, c.owner, lambda x, pi, l: _eff_val(x) < count,
+    _move_one(g, c.owner, lambda x, pi, l: _eff_val(x) < count and g.can_move(x),
               {"prompt": "값이 이 스택의 카드 수보다 낮은 카드를 선택하세요", "intent": "move"})
 
 
@@ -2936,10 +2936,10 @@ def _pride_0_after_compile(g, c, actor, _ctx, _snap):
 
 def _pride_0_play(g, c):
     if g.control == c.owner:
-        _move_one(g, c.owner, lambda x, pi, line: x.uid != c.uid,
+        _move_one(g, c.owner, lambda x, pi, line: x.uid != c.uid and g.can_move(x),
                   {"prompt": "다른 카드 1장을 이동하세요", "intent": "move"})
     else:
-        _move_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
+        _move_one(g, c.owner, lambda x, pi, line: x.owner == c.owner and g.can_move(x),
                   {"prompt": "내 카드 1장을 이동하세요", "intent": "move"})
 
 
@@ -3203,7 +3203,7 @@ def _flexible_1_play(g, c):
         _flip_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
                   {"prompt": "내 카드를 1장 선택하세요", "intent": "flip"})
     elif mode == "shift":
-        _move_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
+        _move_one(g, c.owner, lambda x, pi, line: x.owner == c.owner and g.can_move(x),
                   {"prompt": "내 카드를 1장 선택하세요", "intent": "move"})
 
 
@@ -3233,7 +3233,7 @@ def _flexible_3_play(g, c):
     mode = _choose_mode(g, c.owner, modes, "상대 카드를 이동할까요, 프로토콜 2개를 교환할까요?",
                          {"shift": "카드 이동", "swap": "프로토콜 교환"})
     if mode == "shift":
-        _move_one(g, c.owner, lambda x, pi, line: x.owner == opp,
+        _move_one(g, c.owner, lambda x, pi, line: x.owner == opp and g.can_move(x),
                   {"prompt": "상대 카드 1장을 선택하세요", "intent": "move"})
     elif mode == "swap":
         _swap_two(g, c.owner, c.owner)

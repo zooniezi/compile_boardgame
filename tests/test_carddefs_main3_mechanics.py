@@ -227,6 +227,32 @@ def test_swap_protocols_fires_after_rearrange_reactive(dealt_engine):
     assert len(e.players[1]["hand"]) == hand_before  # 버리고 다시 뽑아 순변화 없음
 
 
+def test_move_one_candidate_lists_exclude_cantmove_cards(engine):
+    """전수 재검토로 발견한 문제: _move_one을 쓰는 여러 카드(Nova_2/Nova_3/
+    Pride_0/Flexible_1/Flexible_3)가 canMove를 후보 필터에 안 넣고 있었다.
+    move_card() 자체가 이제 전역으로 canMove를 강제해서 실제로 잘못된
+    이동이 벌어지진 않지만(§ 회귀 없음), 후보 목록에 이동 불가능한 카드가
+    섞여 나와 "골랐는데 아무 일도 안 일어나는" UX 문제가 있었다. Pride_0로
+    확인: 컨트롤을 가진 상태에서 "다른 카드"가 Rigid_7(이동 불가) 하나뿐이면
+    후보가 없어서 아무것도 이동하지 않아야 한다."""
+    e = engine
+    pride0 = neutral_card(e, "Pride", 0, 1)
+    pride0.definition = get("Pride", 0)
+    pride0.face_up = True
+    e.players[1]["stacks"][1].append(pride0)
+    e.control = 1  # "내가 컨트롤을 가지고 있다면 다른 카드를 1장 이동" 분기
+
+    rigid7 = neutral_card(e, "Rigid", 7, 1)
+    rigid7.definition = get("Rigid", 7)
+    rigid7.face_up = True
+    e.players[1]["stacks"][2].append(rigid7)  # 유일한 "다른 카드"인데 이동 불가
+
+    make_ai(e, 1, [rigid7.uid, 2])  # chooseCard(rigid7 선택 시도), chooseLine(있다면)
+    stack_before = list(e.players[1]["stacks"][2])
+    pride0.definition["play"](e, pride0)
+    assert e.players[1]["stacks"][2] == stack_before  # 이동 후보가 없어 그대로여야 함
+
+
 def test_rearrange_protocols_also_fires_after_rearrange_reactive(dealt_engine):
     """swap_protocols(부분 교환)뿐 아니라 rearrange_protocols(전체 재배열)도
     똑같이 afterRearrange를 쏴야 한다 -- 두 메서드 다 "프로토콜을

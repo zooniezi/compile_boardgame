@@ -31,6 +31,7 @@ from src.game import protocols as Protocols
 from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO, PROTOCOL_TAGLINE, PROTOCOL_VERBS
 from src.game import draft as DraftMod
 from src.game import draftpool as DraftPool
+from src.game import tutorial_script as TutorialScript
 
 app = Flask(__name__)
 
@@ -328,6 +329,25 @@ def new_game():
     GAMES[game_id] = {"engine": e, "lock": threading.Lock()}
     e.start()
     return jsonify({"gameId": game_id, "state": _serialize(e)})
+
+
+@app.route("/api/tutorial/new", methods=["POST"])
+def new_tutorial():
+    """가이드 튜토리얼 챕터 하나를 스크립트된 보드 상태로 시작한다.
+    chapter는 1-indexed (Script.chapters와 동일한 규칙)."""
+    data = request.get_json(force=True) or {}
+    idx = int(data.get("chapter", 1)) - 1
+    if not (0 <= idx < len(TutorialScript.TUTORIAL_CHAPTERS)):
+        return jsonify({"error": "존재하지 않는 챕터예요"}), 404
+    ch = TutorialScript.TUTORIAL_CHAPTERS[idx]
+    e = Engine(protocols1=ch["protocols1"], protocols2=ch["protocols2"],
+               ai1=False, ai2=True, ai_modules={2: ch["ai_class"]()},
+               first_player=1, decks=ch["decks"], on_dealt=ch["on_dealt"],
+               auto_compile=False, auto_refresh=False, seed=1)
+    game_id = uuid.uuid4().hex[:8]
+    GAMES[game_id] = {"engine": e, "lock": threading.Lock()}
+    e.start()
+    return jsonify({"gameId": game_id, "state": _serialize(e), "chapter": idx + 1})
 
 
 @app.route("/api/state/<game_id>")

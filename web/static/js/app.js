@@ -564,10 +564,15 @@ async function handleState(state, mySeq) {
     armedUid = null;
     rearrangeOrder = null;
     renderPrompt(state);
+    // renderPrompt가 방금 프롬프트바 버튼 DOM을 새로 만들었으니, 버튼을
+    // 가리키는 튜토리얼 하이라이트가 있다면 여기서 다시 적용해야 최신
+    // 버튼을 잡는다 (render() 안의 호출은 renderPrompt보다 먼저 돈다).
+    if (window.tutorialOnRender) window.tutorialOnRender(state);
   }
 }
 
 async function submitAnswer(value) {
+  if (window.tutorialGate && !window.tutorialGate(value)) return;
   showPromptBar(false);
   armedUid = null;
   const seq = ++requestSeq;
@@ -607,6 +612,8 @@ function render(state) {
   reattachPinnedZoom();
 
   knownCardUids = allUids;
+
+  if (window.tutorialOnRender) window.tutorialOnRender(state);
 }
 
 // 하스스톤 식 배너(턴 시작/리프레시) 공용 대기열. 서로 다른 엘리먼트라
@@ -632,6 +639,8 @@ function playBanner(el, textEl, text) {
 let announcedTurnCount = -1;
 function maybeShowTurnBanner(state) {
   if (state.winner || state.turnCount == null) return;
+  // 튜토리얼 중엔 안내 모달/하이라이트와 화면을 다투므로 턴 배너는 끈다.
+  if (window.tutorialActive && window.tutorialActive()) return;
   if (state.turnCount === announcedTurnCount) return;
   announcedTurnCount = state.turnCount;
   playBanner($("#turn-banner"), $("#turn-banner-text"), `${pName(state.turn)}의 턴`);
@@ -1353,6 +1362,7 @@ const LOG_KO = {
   "ev.millTop": (p) => `${pName(p.p)}의 덱 맨 위 카드가 버려짐: ${cardLabel(p.card)}${sourceSuffix(p.source)}`,
   "ev.controlTake": (p) => `${pName(p.p)}${josa(p.p)} 제어권 획득`,
   "ev.controlSpend": (p) => `${pName(p.p)}${josa(p.p)} 제어권 소비`,
+  "ev.controlLose": (p) => `${pName(p.p)}${josa(p.p)} 제어권을 잃음`,
   "ev.rearrange": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜 라인${p.a}·${p.b} 교환`,
   "ev.rearrangeFull": (p) => `${pName(p.p)}${josa(p.p)} 프로토콜을 재배치`,
   "ev.swapStacks": (p) => `${pName(p.p)}${josa(p.p)} 라인${p.a}·${p.b} 스택을 통째로 교환`,
