@@ -148,6 +148,43 @@ def test_vs_ai_always_shows_the_human_players_own_hand_even_during_ai_turn():
     assert data["players"]["2"]["hand"][-1]["proto"] is None    # AI는 여전히 감춰짐
 
 
+def test_hotseat_reveals_hand_to_the_actual_chooser_of_a_pending_prompt():
+    """Lust_6/Inert_3처럼 카드 효과가 상대에게 "네 손패에서 골라라"를
+    강제하면, 실제 응답자(pending.req.chooser)는 카드 소유자가 아닌
+    쪽인데 e.turn은 여전히 카드를 낸 쪽이다. 이 경우 손패 노출은
+    e.turn이 아니라 실제 응답자 기준으로 판단해야 한다 -- 안 그러면
+    자기 손패에서 고르는 화면인데 카드 정보가 전부 null로 나온다."""
+    client = _client()
+    r = client.post("/api/new_game", json={"mode": "hotseat"})
+    gid = r.get_json()["gameId"]
+    e = GAMES[gid]["engine"]
+
+    e.turn = 2  # 카드를 낸 쪽(효과 소유자)
+    hc = e.new_card("Fire", 1, 1)
+    e.players[1]["hand"].append(hc)
+    e.pending = {"kind": "input", "req": {"type": "chooseCard", "chooser": 1, "fromHand": True}}
+
+    data = client.get(f"/api/state/{gid}").get_json()
+    assert data["players"]["1"]["hand"][-1]["proto"] == "Fire"  # 응답자 자신은 보임
+    assert data["players"]["1"]["hand"][-1]["value"] == 1
+
+
+def test_hotseat_still_hides_hand_when_pending_is_not_an_input_prompt():
+    """회귀 방지: pending이 anim이거나 없을 때는 기존처럼 e.turn 기준으로만
+    가려야 한다(새 로직이 무관한 상황까지 공개하면 안 됨)."""
+    client = _client()
+    r = client.post("/api/new_game", json={"mode": "hotseat"})
+    gid = r.get_json()["gameId"]
+    e = GAMES[gid]["engine"]
+
+    e.turn = 2
+    e.players[1]["hand"].append(e.new_card("Fire", 1, 1))
+    e.pending = {"kind": "anim"}
+
+    data = client.get(f"/api/state/{gid}").get_json()
+    assert data["players"]["1"]["hand"][-1]["proto"] is None
+
+
 def test_vs_ai_always_shows_the_human_players_own_facedown_board_cards():
     """손패뿐 아니라 필드의 뒷면 카드도 마찬가지 -- vs_ai에서 AI 턴이어도
     사람 자신이 낸 뒷면 카드는 계속 보여야 한다."""

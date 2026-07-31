@@ -183,10 +183,14 @@ def _extra_play(g, pi):
         g.play_card(pi, action["uid"], action["line"], action["faceUp"])
 
 
-def _play_top_face_down_each(g, c, eligible):
+def _play_top_face_down_each(g, c, eligible, owner=None):
     """eligible 라인마다 덱 맨 위 카드를 뒷면으로 낸다 (Life_0, Smoke_0).
     ONE 명령: owner가 순서를 고른다. 덱이 부족하면 그 자체가 "어느 라인에
     줄지" 선택이 된다.
+
+    owner를 따로 주면(기본은 c.owner) 카드를 내는 덱의 주인과 "이 명령 중
+    가려짐을 감시할 소스 카드(c)"를 분리할 수 있다(Overwhelm_2 "상대는
+    각자의 덱 맨 위 카드를 낸다" -- 감시 대상은 여전히 Overwhelm_2 자신).
 
     공식 FAQ(생명0/물1 항목): "이 과정에서 [카드]가 다른 카드에 의해
     가려지면, 가운데 명령은 즉시 중단됩니다." -- 이 함수는 g.command()로
@@ -195,7 +199,7 @@ def _play_top_face_down_each(g, c, eligible):
     안에서는 억제된다. 그래서 라인마다 c 자신이 여전히 uncovered인지 직접
     확인해야 한다 (물1은 command()로 안 감싸서 이 문제가 없음 -- 매 반복마다
     play_top_face_down이 스스로 effect_interrupted()를 재확인하기 때문)."""
-    owner = c.owner
+    owner = c.owner if owner is None else owner
 
     def body():
         # 라인 잠금은 effect에서 그 라인을 통째로 제외시킨다 (자격 판정 시점에
@@ -391,6 +395,106 @@ def _rearrange(g, chooser, target_player):
         "prompt": ("자신의 프로토콜을 재배열하세요" if target_player == chooser
                    else "상대의 프로토콜을 재배열하세요")})
     g.rearrange_protocols(target_player, order)
+
+
+def _reveal_hand(g, pi):
+    """pi의 손패 전체를 공개한다 (Lust_4 "내 손패를 공개합니다")."""
+    cards = [{"uid": hc.uid, "proto": hc.proto, "value": hc.value} for hc in g.players[pi]["hand"]]
+    g.emit("revealHand", {"player": pi,
+                           "i18n": {"key": "ev.revealHand", "params": {"p": pi, "cards": cards}}})
+
+
+# ---------------------------------------------------------------------------
+# Main 3 / Aux 3 공용 헬퍼 -- 여러 프로토콜(2개 이상)이 같이 쓴다.
+# 프로토콜 하나에서만 쓰는 헬퍼는 그 프로토콜 섹션 바로 앞에 둔다(기존 관례).
+# ---------------------------------------------------------------------------
+
+def _choose_mode(g, pi, modes, prompt, labels=None):
+    """둘 이상의 효과 갈래(예: "반환 또는 이동") 중 하나를 고르게 한다.
+    후보가 0개면 None, 1개면 자동으로 그것, 2개 이상이면 실제로 묻는다
+    (Flexible_0/1/3, Rigid_7)."""
+    if not modes:
+        return None
+    if len(modes) == 1:
+        return modes[0]
+    return g.choose_option_from(pi, modes, {"prompt": prompt, "intent": "effectMode", "labels": labels})
+
+
+def _tied_extreme(cards, highest):
+    """cards 중 값이 가장 높은/낮은(highest) 카드들 (동점 전부)."""
+    value = None
+    tied = []
+    for card in cards:
+        v = _eff_val(card)
+        if value is None or (highest and v > value) or (not highest and v < value):
+            value = v
+            tied = [card]
+        elif v == value:
+            tied.append(card)
+    return tied
+
+
+def _choose_extreme(g, chooser, cards, highest, prompt, intent):
+    """cards 중 값이 가장 높은/낮은(highest) 카드 1장을 고른다 -- 동점이면
+    chooser가 직접 고른다. 삭제 등 후속 동작은 호출부 몫(Ambush_2/3,
+    Overwhelm_4)."""
+    tied = _tied_extreme(cards, highest)
+    if not tied:
+        return None
+    if len(tied) == 1:
+        return tied[0]
+    return g.choose_card_from(chooser, tied, {"prompt": prompt, "intent": intent})
+
+
+def _directly_above(g, card):
+    """card 바로 위(그것을 덮고 있는 카드), 없으면 None (Fulcrum_1/Flexible_2/
+    Sloth_0)."""
+    pi, line, idx = g.locate(card)
+    if pi is None:
+        return None
+    st = g.players[pi]["stacks"][line]
+    return st[idx + 1] if idx + 1 < len(st) else None
+
+
+def _play_hand_face_down(g, pi, line, opts=None):
+    """손 카드 하나를 line에 뒷면으로 낸다 -- pi가 아닌 다른 좌석에 낼 수도
+    있고(opts.side), 특정 카드 바로 밑에 낼 수도 있다(opts.underCard)
+    (Inert_3/Rigid_1/Rigid_3)."""
+    opts = opts or {}
+    if not g.players[pi]["hand"] or not g.can_play_face_down(pi, None, line)[0]:
+        return None
+    cands = list(g.players[pi]["hand"])
+    dests = [{"uid": hc.uid, "line": line, "fu": False, "fd": True} for hc in cands]
+    card = g.choose_card_from(pi, cands, {
+        "fromHand": True, "dests": dests,
+        "prompt": opts.get("prompt", "뒷면으로 낼 카드를 선택하세요"),
+        "intent": "play",
+    })
+    if not card:
+        return None
+    ok = g.play_card(pi, card.uid, line, False, opts.get("side", pi), opts.get("underCard"))
+    return card if ok else None
+
+
+def _play_hand_face_down_each(g, pi, lines, prompt=None):
+    """`lines` 각 라인에 손 카드를 하나씩 뒷면으로 낸다. ONE 명령: pi가
+    순서를 고른다(손이 부족하면 그 자체로 "어느 라인에 줄지" 선택이 됨) --
+    _play_top_face_down_each와 같은 패턴이나 덱이 아니라 손에서 낸다는
+    점만 다르다(Inert_3/Rigid_1)."""
+    def body():
+        remaining = _facedown_legal_lines(g, pi, lines)
+        while g.players[pi]["hand"] and remaining:
+            line = remaining[0]
+            if len(remaining) > 1:
+                line = g.choose_line_from(pi, remaining,
+                                           {"prompt": "다음 카드를 뒷면으로 낼 라인을 선택하세요",
+                                            "intent": "play"})
+                if not line:
+                    break
+            if not _play_hand_face_down(g, pi, line, {"prompt": prompt}):
+                break
+            remaining.remove(line)
+    g.command(body)
 
 
 # 모든 프로토콜의 값-5 카드는 "카드 1장을 버려라"라고 적혀 있다 -- 정의가
@@ -2185,6 +2289,1159 @@ DEFS["Unity_3"] = {"play": _unity_3_play}
 DEFS["Unity_4"] = {"can": {"finishTop": lambda g, c: len(g.players[c.owner]["hand"]) == 0},
                     "finishTop": _unity_4_finish_top}
 DEFS["Unity_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# AMBUSH
+# =============================================================================
+def _ambush_0_play(g, c):
+    g.draw(c.owner, 3)
+    _flip_one(g, c.owner, lambda x, pi, line: x.owner == c.owner and not x.face_up,
+              {"prompt": "내 뒷면 카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+def _ambush_1_play(g, c):
+    targets = g.cards_in_play(lambda x, pi, line: x.owner == c.owner and x.uid != c.uid
+                               and x.value in (0, 1))
+    flipped = [0]
+
+    def body():
+        for target in targets:
+            if g.locate(target)[0] is not None and g.can_flip(target) and not g.effect_interrupted():
+                # 뒤집힌 최종 방향이 아니라 "이 효과로 뒤집었는가"를 센다: 뒷면
+                # Water_0은 자신이 방금 드러난 이 명령 도중 다시 뒷면으로
+                # 뒤집힐 수 있지만 그래도 이 명령이 뒤집은 건 맞다. Metal_6은
+                # 뒤집는 대신 스스로 제거되는 유일한 예외.
+                did_flip = not (target.face_up and target.definition.get("onFlipSelfDestruct"))
+                g.flip_card(target)
+                if did_flip:
+                    flipped[0] += 1
+    g.command(body)
+    # 별개 문장: 앞 명령이 도중에 중단됐으면 이 뽑기는 무효.
+    g.draw(c.owner, flipped[0])
+
+
+def _ambush_2_play(g, c):
+    covered = g.cards_in_play(lambda x, pi, line: x.owner == c.owner and not g.is_uncovered(x)
+                               and g.can_move(x))
+    card = _choose_extreme(g, c.owner, covered, False,
+                            "내 가려진 카드 중 가치가 가장 낮은 카드를 선택하세요", "move")
+    if card:
+        _move_to_other_line(g, c.owner, card)
+
+
+def _ambush_3_play(g, c):
+    opp = _opp(c)
+    covered = g.cards_in_play(lambda x, pi, line: x.owner == opp and x.face_up
+                               and not g.is_uncovered(x) and g.can_flip(x))
+    card = _choose_extreme(g, c.owner, covered, True,
+                            "상대의 가려진 앞면 카드 중 가치가 가장 높은 카드를 선택하세요", "flip")
+    if card:
+        g.flip_card(card)
+
+
+def _ambush_4_play(g, c):
+    has_facedown_top = len(g.cards_in_play(
+        lambda x, pi, line: x.owner == c.owner and not x.face_up and g.is_uncovered(x))) > 0
+    if has_facedown_top:
+        g.draw(c.owner, 1)
+
+
+DEFS["Ambush_0"] = {"play": _ambush_0_play}
+DEFS["Ambush_1"] = {"play": _ambush_1_play}
+DEFS["Ambush_2"] = {"play": _ambush_2_play}
+DEFS["Ambush_3"] = {"play": _ambush_3_play}
+DEFS["Ambush_4"] = {"play": _ambush_4_play}
+DEFS["Ambush_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# ENVY
+# =============================================================================
+def _envy_0_line_value_self(g, c, line):
+    opp = _opp(c)
+    best = 0
+    for card in g.players[opp]["stacks"][line]:
+        best = max(best, _eff_val(card))
+    return best
+
+
+def _envy_1_play(g, c):
+    if g.control == _opp(c):
+        _flip_one(g, c.owner, None, {"optional": True, "prompt": "카드 1장을 뒤집을 수 있습니다",
+                                      "intent": "flip"})
+
+
+def _envy_1_can_start(g, c):
+    return g.control == _opp(c)
+
+
+def _envy_1_start(g, c):
+    if g.control == _opp(c):
+        g.gain_control(c.owner)
+
+
+def _envy_2_play(g, c):
+    g.draw(c.owner, len(g.players[_opp(c)]["hand"]))
+
+
+def _envy_3_after_play(g, c, actor, ctx, snap):
+    # "이 라인에서" -- ctx.line(방금 상대가 낸 라인)이 snap.line(스냅샷 시점의
+    # Envy 자신의 라인)과 같을 때만 발동.
+    if actor == c.owner or not ctx or not snap or ctx.get("line") != snap.get("line"):
+        return
+    if not g.players[c.owner]["deck"]:
+        return
+    lines = _facedown_legal_lines(g, c.owner, [snap["line"]])
+    if lines:
+        g.play_top_face_down(c.owner, snap["line"])
+
+
+def _count_compiled(g, pi):
+    return sum(1 for l in (1, 2, 3) if g.players[pi]["compiled"][l])
+
+
+def _envy_4_play(g, c):
+    if _count_compiled(g, _opp(c)) > _count_compiled(g, c.owner):
+        _flip_one(g, c.owner, None, {"prompt": "카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+DEFS["Envy_0"] = {"passive": {"lineValueSelf": _envy_0_line_value_self}}
+DEFS["Envy_1"] = {"play": _envy_1_play, "can": {"start": _envy_1_can_start}, "start": _envy_1_start}
+DEFS["Envy_2"] = {"play": _envy_2_play}
+DEFS["Envy_3"] = {"reactive": {"afterPlay": _envy_3_after_play}}
+DEFS["Envy_4"] = {"play": _envy_4_play}
+DEFS["Envy_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# FULCRUM
+# =============================================================================
+def _fulcrum_0_play(g, c):
+    if not g.players[c.owner]["hand"]:
+        g.discard(_opp(c), 1)
+
+
+def _fulcrum_0_can_start_top(g, c):
+    return not g.players[c.owner]["hand"] and bool(g.players[_opp(c)]["hand"])
+
+
+def _fulcrum_0_start_top(g, c):
+    if not g.players[c.owner]["hand"]:
+        g.discard(_opp(c), 2)
+
+
+def _fulcrum_1_play(g, c):
+    targets = g.cards_in_play(lambda x, pi, line: x.uid != c.uid and x.face_up)
+
+    def body():
+        for target in targets:
+            if g.locate(target)[0] is not None:
+                g.flip_card(target)
+    g.command(body)
+    g.swap_stacks(c.owner, 1, 3)
+
+
+def _fulcrum_2_play(g, c):
+    if len(g.players[c.owner]["hand"]) == 2:
+        _delete_one(g, c.owner, lambda x, pi, line: x.owner == _opp(c),
+                    {"prompt": "상대의 카드를 1장 제거하세요", "intent": "delete"})
+
+
+def _fulcrum_3_play(g, c):
+    g.draw(c.owner, 1)
+    g.swap_protocols(c.owner, 1, 3)
+
+
+def _fulcrum_4_play(g, c):
+    if len(g.players[c.owner]["hand"]) == 4:
+        g.draw(c.owner, 1)
+
+
+DEFS["Fulcrum_0"] = {"play": _fulcrum_0_play, "can": {"startTop": _fulcrum_0_can_start_top},
+                      "startTop": _fulcrum_0_start_top}
+DEFS["Fulcrum_1"] = {"play": _fulcrum_1_play}
+DEFS["Fulcrum_2"] = {"play": _fulcrum_2_play}
+DEFS["Fulcrum_3"] = {"play": _fulcrum_3_play}
+DEFS["Fulcrum_4"] = {"play": _fulcrum_4_play}
+DEFS["Fulcrum_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# GLUTTONY
+# =============================================================================
+def _gluttony_0_after_cache(g, c, actor, _ctx, _snap):
+    if actor != c.owner or not g.players[c.owner]["deck"]:
+        return
+    lines = _facedown_legal_lines(g, c.owner, [1, 2, 3])
+    if not lines:
+        return
+    line = lines[0]
+    if len(lines) > 1:
+        line = g.choose_line_from(c.owner, lines,
+                                   {"prompt": "덱 맨 위 카드를 뒷면으로 낼 라인을 선택하세요",
+                                    "intent": "play", "target": c.owner})
+    if line:
+        g.play_top_face_down(c.owner, line)
+
+
+def _gluttony_0_play(g, c):
+    _return_one(g, c.owner, lambda x, pi, line: x.uid != c.uid,
+                {"prompt": "다른 카드 1장을 소유자에게 돌려주세요", "intent": "return"})
+    g.draw(c.owner, 1)
+
+
+def _gluttony_1_after_cache(g, c, _actor, _ctx, _snap):
+    _delete_one(g, c.owner, None, {"prompt": "카드 1장을 제거하세요", "intent": "delete"})
+
+
+def _gluttony_1_play(g, c):
+    g.draw(c.owner, 2)
+
+
+def _gluttony_2_play(g, c):
+    g.draw(c.owner, len(g.players[c.owner]["hand"]))
+
+
+def _gluttony_3_can_finish_top(g, c):
+    above = _directly_above(g, c)
+    return above is not None and above.face_up
+
+
+def _gluttony_3_finish_top(g, c):
+    above = _directly_above(g, c)
+    if above and above.face_up:
+        g.delete_cards([above])
+
+
+def _gluttony_3_play(g, c):
+    g.draw(c.owner, 2)
+
+
+def _gluttony_4_after_refresh(g, c, actor, _ctx, _snap):
+    if actor == c.owner:
+        g.draw(c.owner, 1)
+
+
+DEFS["Gluttony_0"] = {"reactiveTop": {"afterCache": _gluttony_0_after_cache}, "play": _gluttony_0_play}
+DEFS["Gluttony_1"] = {"play": _gluttony_1_play, "reactive": {"afterCache": _gluttony_1_after_cache}}
+DEFS["Gluttony_2"] = {"play": _gluttony_2_play}
+DEFS["Gluttony_3"] = {"play": _gluttony_3_play, "can": {"finishTop": _gluttony_3_can_finish_top},
+                       "finishTop": _gluttony_3_finish_top}
+DEFS["Gluttony_4"] = {"reactive": {"afterRefresh": _gluttony_4_after_refresh}}
+DEFS["Gluttony_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# GREED
+# =============================================================================
+def _greed_0_play(g, c):
+    _discard_whole_hand(g, c.owner)
+    _delete_one(g, c.owner, None, {"prompt": "카드 1장을 제거하세요", "intent": "delete"})
+
+
+def _greed_0_after_delete(g, c, actor, _ctx, _snap):
+    if actor == c.owner:
+        g.draw(c.owner, 1)
+
+
+def _greed_1_can_finish(g, c):
+    return len(g.compilable_lines(c.owner)) > 0
+
+
+def _greed_1_finish(g, c):
+    lines = g.compilable_lines(c.owner)
+    if not lines:
+        return
+    line = g.choose_line_from(c.owner, lines,
+                               {"prompt": "컴파일할 라인을 선택하세요", "intent": "compile"}) or lines[0]
+    g.do_compile(c.owner, line)
+
+
+def _greed_2_play(g, c):
+    g.discard(_opp(c), 1)
+
+
+def _greed_2_start(g, c):
+    _return_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
+                {"optional": True, "prompt": "내 카드를 1장 손패로 되돌릴 수 있습니다", "intent": "return"})
+
+
+def _greed_3_play(g, c):
+    pi, line, _idx = g.locate(c)
+    if pi is None:
+        return
+    stack = g.players[pi]["stacks"][line]
+    candidates = [card for card in stack[:-1] if card.owner == c.owner and g.can_move(card)]
+    card = g.choose_card_from(c.owner, candidates,
+                               {"prompt": "이 스택에 있는 내 가려진 카드를 선택하세요", "intent": "move"})
+    if card:
+        _move_to_other_line(g, c.owner, card)
+
+
+def _greed_4_play(g, c):
+    did = False
+    if g.players[c.owner]["hand"] and _ask(g, c.owner, "손패를 모두 버리시겠습니까?", "discardHand"):
+        did = _discard_whole_hand(g, c.owner) > 0
+    if did:
+        _flip_one(g, c.owner, None, {"prompt": "카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+DEFS["Greed_0"] = {"play": _greed_0_play, "reactive": {"afterDelete": _greed_0_after_delete}}
+DEFS["Greed_1"] = {"can": {"finish": _greed_1_can_finish}, "finish": _greed_1_finish}
+DEFS["Greed_2"] = {"play": _greed_2_play, "start": _greed_2_start}
+DEFS["Greed_3"] = {"play": _greed_3_play}
+DEFS["Greed_4"] = {"play": _greed_4_play}
+DEFS["Greed_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# LUST (값 1 없음)
+# =============================================================================
+def _lust_2_play(g, c):
+    line = _line_of(g, c)
+    if not line:
+        return
+    opp = _opp(c)
+    candidates = g.cards_in_play(lambda x, pi, l: pi == opp and l != line
+                                  and not g.is_uncovered(x) and g.can_move(x))
+    card = g.choose_card_from(c.owner, candidates, {
+        "optional": True, "prompt": "상대의 가려진 카드를 1장 이 라인으로 이동할 수 있습니다",
+        "intent": "move"})
+    if card:
+        g.move_card(card, card.owner, line)
+
+
+def _lust_3_play(g, c):
+    opp = _opp(c)
+    hand = g.players[opp]["hand"]
+    if not hand:
+        return
+    # 첫 번째 명령: 손에서 제거하지 않고 무작위 카드 1장만 공개.
+    idx = g.rng(len(hand)) - 1
+    card = hand[idx]
+    g.emit("reveal", {"player": opp, "i18n": {"key": "ev.reveal", "params": {
+        "p": opp, "card": {"uid": card.uid, "proto": card.proto, "value": card.value}}}})
+    # 두 번째 명령: Lust 소유자가 합법적인 라인을 고른다 -- 목적지가 정해진
+    # 뒤에야 그 카드가 상대 손을 떠난다.
+    lines = _facedown_legal_lines(g, c.owner, [1, 2, 3])
+    if not lines:
+        return
+    line = g.choose_line_from(c.owner, lines, {
+        "prompt": "공개된 카드를 상대 쪽에 뒷면으로 플레이할 라인을 선택하세요",
+        "intent": "play", "target": opp})
+    if not line:
+        return
+    hand.remove(card)
+    g.play_external(c.owner, card, opp, line, False)
+
+
+def _lust_3_can_finish(g, c):
+    return g.control == c.owner
+
+
+def _lust_3_finish(g, c):
+    if g.control != c.owner:
+        return
+    if _ask(g, c.owner, "컨트롤을 포기하시겠습니까?", "loseControl"):
+        # 컨트롤 포기는 컴파일/리프레시 소비 경로가 아니고 재배치권도 안 준다.
+        if g.lose_control(c.owner):
+            _flip_one(g, c.owner, None, {"prompt": "카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+def _lust_4_play(g, c):
+    _reveal_hand(g, c.owner)
+    g.lose_control(_opp(c))
+
+
+def _lust_4_after_gain_control(g, c, actor, _ctx, _snap):
+    if actor == _opp(c):
+        g.draw(c.owner, 1)
+
+
+def _lust_6_play(g, c):
+    # 별개 명령: 버리기 트리거로 인한 중단이 상대의 강제 플레이를 취소시킨다.
+    g.discard(c.owner, 1)
+    line = _line_of(g, c)
+    if not line:
+        return
+    _play_hand_face_down(g, _opp(c), line, {"prompt": "이 라인에 카드 1장을 뒷면으로 플레이하세요"})
+
+
+DEFS["Lust_0"] = {
+    "passive": {"lineValueBoth": 10},
+    "play": lambda g, c: g.gain_control(c.owner),
+    "blockOpponentCompileWithControl": True,
+}
+DEFS["Lust_2"] = {"allowFaceUpHere": True, "play": _lust_2_play}
+DEFS["Lust_3"] = {"play": _lust_3_play, "can": {"finish": _lust_3_can_finish}, "finish": _lust_3_finish}
+DEFS["Lust_4"] = {"play": _lust_4_play, "reactive": {"afterGainControl": _lust_4_after_gain_control}}
+DEFS["Lust_5"] = DISCARD_ONE_DEF
+DEFS["Lust_6"] = {"play": _lust_6_play}
+
+
+# =============================================================================
+# MOMENTUM (값 2 없음)
+# =============================================================================
+def _momentum_0_play(g, c):
+    lines = [line for line in (1, 2, 3)
+             if g.players[1]["compiled"][line] or g.players[2]["compiled"][line]]
+    _play_top_face_down_each(g, c, lines)
+
+
+def _momentum_1_after_compile(g, c, _actor, _ctx, _snap):
+    line = _line_of(g, c)
+    if line and g.can_play_face_down(c.owner, None, line)[0]:
+        g.play_top_face_down(c.owner, line)
+
+
+def _momentum_1_after_rearrange(g, c, _actor, _ctx, _snap):
+    # 두 개의 하단 명령: 버리기 트리거로 인한 중단이 뽑기를 무효화한다
+    # (하나의 command()로 감싸지 않고 그대로 노출).
+    g.discard(c.owner, 1)
+    g.draw(c.owner, 1)
+
+
+def _momentum_3_play(g, c):
+    g.draw(c.owner, 2)
+
+
+def _momentum_4_play(g, c):
+    _rearrange(g, c.owner, c.owner)
+
+
+def _momentum_6_after_compile(g, c, _actor, _ctx, _snap):
+    g.delete_card(c)
+
+
+def _momentum_6_play(g, c):
+    g.discard(c.owner, 1)
+
+
+DEFS["Momentum_0"] = {"play": _momentum_0_play}
+DEFS["Momentum_1"] = {"reactiveTop": {"afterCompile": _momentum_1_after_compile},
+                       "reactive": {"afterRearrange": _momentum_1_after_rearrange}}
+DEFS["Momentum_3"] = {"play": _momentum_3_play}
+DEFS["Momentum_4"] = {"play": _momentum_4_play}
+DEFS["Momentum_5"] = DISCARD_ONE_DEF
+DEFS["Momentum_6"] = {"reactiveTop": {"afterCompile": _momentum_6_after_compile}, "play": _momentum_6_play}
+
+
+# =============================================================================
+# NOVA
+# =============================================================================
+def _covered_nova(g, card):
+    """card 바로 밑 카드가 앞면 Nova 카드인가 (Nova_2)."""
+    pi, line, idx = g.locate(card)
+    if pi is None or idx <= 0:
+        return False
+    below = g.players[pi]["stacks"][line][idx - 1]
+    return below.face_up and below.proto == "Nova"
+
+
+def _exact_five_lines(g, owner):
+    """owner의 카드가 정확히 5장이고, 그 라인에 앞면 카드가 하나라도 있는
+    라인들 (Nova_0 -- 앞면 카드가 하나도 없으면 지울 게 없으므로 후보에서
+    뺀다)."""
+    lines = []
+    for line in (1, 2, 3):
+        if len(g.players[owner]["stacks"][line]) == 5:
+            has_face_up = any(card.face_up for side in (1, 2)
+                               for card in g.players[side]["stacks"][line])
+            if has_face_up:
+                lines.append(line)
+    return lines
+
+
+def _nova_under_targets(g, owner):
+    """owner가 덱 맨 위 카드를 뒷면으로 낼 수 있는, 드러난 앞면 Nova 카드들
+    (Nova_0 종료 효과 대상)."""
+    return g.cards_in_play(lambda x, pi, line: x.face_up and x.proto == "Nova"
+                            and g.is_uncovered(x) and g.can_play_face_down(owner, None, line)[0])
+
+
+def _nova_0_can_start_top(g, c):
+    return len(_exact_five_lines(g, c.owner)) > 0
+
+
+def _nova_0_can_finish(g, c):
+    return len(g.players[c.owner]["deck"]) > 0 and len(_nova_under_targets(g, c.owner)) > 0
+
+
+def _nova_0_start_top(g, c):
+    lines = _exact_five_lines(g, c.owner)
+    if not lines:
+        return
+    line = g.choose_line_from(c.owner, lines,
+                               {"prompt": "카드가 정확히 5장인 라인을 선택하세요",
+                                "intent": "delete"}) or lines[0]
+    cards = [card for pi in (1, 2) for card in g.players[pi]["stacks"][line] if card.face_up]
+    # "모두 제거"는 단일 명령: 스냅샷을 먼저 떠서 Nova_0 자신이 제거되며
+    # 나머지가 잘리지 않게 한다.
+    g.delete_cards(cards)
+
+
+def _nova_0_play(g, c):
+    controller = g.control
+    if controller:
+        _swap_two(g, controller, c.owner)
+
+
+def _nova_0_finish(g, c):
+    if not g.players[c.owner]["deck"]:
+        return
+    targets = _nova_under_targets(g, c.owner)
+    if not targets:
+        return
+    target = g.choose_card_from(c.owner, targets, {
+        "prompt": "드러난 '신성' 카드를 선택하세요", "intent": "play"}) or targets[0]
+    side, line, _idx = g.locate(target)
+    if side is not None and line and g.can_play_face_down(c.owner, None, line)[0]:
+        g.play_top_face_down(c.owner, line, under_card=target, side=side)
+
+
+def _nova_1_play(g, c):
+    line = _line_of(g, c)
+    if not line:
+        return
+    g.discard(_opp(c), len(g.players[c.owner]["stacks"][line]))
+
+
+def _nova_2_play(g, c):
+    if _covered_nova(g, c):
+        if _ask(g, c.owner, "내 프로토콜을 재배열하시겠습니까?", "rearrange"):
+            _rearrange(g, c.owner, c.owner)
+    else:
+        g.gain_control(c.owner)
+
+
+def _nova_2_after_rearrange(g, c, actor, _ctx, _snap):
+    # 이벤트의 actor는 재배열을 "고른/수행한" 플레이어다 -- 어느 프로토콜이
+    # 움직였는지와는 무관.
+    if actor != c.owner:
+        return
+    _move_one(g, c.owner, lambda x, pi, line: not x.face_up,
+              {"optional": True, "prompt": "뒷면 카드를 1장 이동할 수 있습니다", "intent": "move"})
+
+
+def _nova_3_play(g, c):
+    line = _line_of(g, c)
+    if not line:
+        return
+    count = len(g.players[c.owner]["stacks"][line])
+    _move_one(g, c.owner, lambda x, pi, l: _eff_val(x) < count,
+              {"prompt": "값이 이 스택의 카드 수보다 낮은 카드를 선택하세요", "intent": "move"})
+
+
+def _nova_4_play(g, c):
+    line = _line_of(g, c)
+    if not line:
+        return
+    count = len(g.players[c.owner]["stacks"][line])
+    _flip_one(g, c.owner, lambda x, pi, l: _eff_val(x) < count,
+              {"prompt": "값이 이 스택의 카드 수보다 낮은 카드를 선택하세요", "intent": "flip"})
+
+
+DEFS["Nova_0"] = {
+    "can": {"startTop": _nova_0_can_start_top, "finish": _nova_0_can_finish},
+    "startTop": _nova_0_start_top,
+    "play": _nova_0_play,
+    "finish": _nova_0_finish,
+}
+DEFS["Nova_1"] = {"play": _nova_1_play}
+DEFS["Nova_2"] = {"play": _nova_2_play, "reactive": {"afterRearrange": _nova_2_after_rearrange}}
+DEFS["Nova_3"] = {"play": _nova_3_play}
+DEFS["Nova_4"] = {"play": _nova_4_play}
+DEFS["Nova_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# OVERWHELM (값 0 없음)
+# =============================================================================
+def _overwhelm_1_play(g, c):
+    opp = _opp(c)
+    lines = [line for line in (1, 2, 3) if g.line_value(c.owner, line) > g.line_value(opp, line)]
+    _play_top_face_down_each(g, c, lines)
+
+
+def _overwhelm_2_finish_top(g, c):
+    # 두 개의 인쇄된 명령. 첫 명령 도중 Overwhelm이 가려져도 지속되는
+    # top-텍스트 자체는 억제되지 않는다 -- 뒤집히거나 제거돼야 억제됨.
+    _play_top_face_down_each(g, c, [1, 2, 3])
+    g.flip_card(c)
+
+
+def _overwhelm_2_play(g, c):
+    _play_top_face_down_each(g, c, [1, 2, 3], owner=_opp(c))
+
+
+def _overwhelm_3_can_finish(g, c):
+    line = _line_of(g, c)
+    return (len(g.players[c.owner]["hand"]) >= 5 and len(g.players[c.owner]["deck"]) > 0
+            and line is not None and g.can_play_face_down(c.owner, None, line)[0])
+
+
+def _overwhelm_3_finish(g, c):
+    line = _line_of(g, c)
+    if (len(g.players[c.owner]["hand"]) >= 5 and g.players[c.owner]["deck"]
+            and line and g.can_play_face_down(c.owner, None, line)[0]):
+        g.play_top_face_down(c.owner, line)
+
+
+def _count_cards(g, owner):
+    return sum(1 for card in g.cards_in_play() if card.owner == owner)
+
+
+def _choose_lowest_covered(g, chooser, target_owner, prompt):
+    covered = g.cards_in_play(lambda x, pi, line: x.owner == target_owner and not g.is_uncovered(x))
+    return _choose_extreme(g, chooser, covered, False, prompt, "delete")
+
+
+def _overwhelm_4_play(g, c):
+    opp = _opp(c)
+    if _count_cards(g, c.owner) <= _count_cards(g, opp):
+        return
+    target = _choose_lowest_covered(g, c.owner, opp,
+                                     "상대의 가려진 카드 중 가치가 가장 낮은 카드를 선택하세요")
+    if target:
+        g.delete_cards([target])
+
+
+def _overwhelm_6_can_start_top(g, c):
+    line = _line_of(g, c)
+    return line is not None and g.line_value(_opp(c), line) > g.line_value(c.owner, line)
+
+
+def _overwhelm_6_start_top(g, c):
+    line = _line_of(g, c)
+    if line and g.line_value(_opp(c), line) > g.line_value(c.owner, line):
+        g.flip_card(c)
+
+
+DEFS["Overwhelm_1"] = {"play": _overwhelm_1_play}
+DEFS["Overwhelm_2"] = {"finishTop": _overwhelm_2_finish_top, "play": _overwhelm_2_play}
+DEFS["Overwhelm_3"] = {"can": {"finish": _overwhelm_3_can_finish}, "finish": _overwhelm_3_finish}
+DEFS["Overwhelm_4"] = {"play": _overwhelm_4_play}
+DEFS["Overwhelm_5"] = DISCARD_ONE_DEF
+DEFS["Overwhelm_6"] = {"can": {"startTop": _overwhelm_6_can_start_top}, "startTop": _overwhelm_6_start_top}
+
+
+# =============================================================================
+# PRIDE (값 1 없음)
+# =============================================================================
+def _pride_0_after_compile(g, c, actor, _ctx, _snap):
+    if actor == c.owner:
+        g.refresh(c.owner)
+
+
+def _pride_0_play(g, c):
+    if g.control == c.owner:
+        _move_one(g, c.owner, lambda x, pi, line: x.uid != c.uid,
+                  {"prompt": "다른 카드 1장을 이동하세요", "intent": "move"})
+    else:
+        _move_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
+                  {"prompt": "내 카드 1장을 이동하세요", "intent": "move"})
+
+
+def _line_comparison_count(g, owner, owner_is_higher):
+    opp = 2 if owner == 1 else 1
+    n = 0
+    for line in (1, 2, 3):
+        mine, theirs = g.line_value(owner, line), g.line_value(opp, line)
+        if (owner_is_higher and mine > theirs) or (not owner_is_higher and mine < theirs):
+            n += 1
+    return n
+
+
+def _pride_2_play(g, c):
+    g.draw(c.owner, _line_comparison_count(g, c.owner, True))
+
+
+def _pride_2_can_start(g, c):
+    line = _line_of(g, c)
+    return line is not None and g.line_value(c.owner, line) > g.line_value(_opp(c), line)
+
+
+def _pride_2_start(g, c):
+    line = _line_of(g, c)
+    if line and g.line_value(c.owner, line) > g.line_value(_opp(c), line):
+        g.draw(c.owner, 1)
+
+
+def _pride_3_play(g, c):
+    _flip_one(g, c.owner, lambda x, pi, line: x.owner == c.owner and not x.face_up,
+              {"prompt": "내 뒷면 카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+def _move_opponent_to_source_line(g, c):
+    dest = _line_of(g, c)
+    if not dest:
+        return
+    opp = _opp(c)
+    candidates = g.cards_in_play(lambda x, pi, line: x.owner == opp and line != dest
+                                  and g.is_uncovered(x) and g.can_move(x))
+    target = g.choose_card_from(c.owner, candidates, {
+        "optional": True, "prompt": "상대 카드 1장을 이 라인으로 이동할 수 있습니다", "intent": "move"})
+    if target:
+        g.move_card(target, target.owner, dest)
+
+
+def _pride_4_play(g, c):
+    if g.control == c.owner:
+        _move_opponent_to_source_line(g, c)
+
+
+def _pride_6_after_gain_control(g, c, actor, _ctx, _snap):
+    if actor == _opp(c):
+        g.flip_card(c)
+
+
+def _pride_6_play(g, c):
+    if g.control == _opp(c):
+        g.flip_card(c)
+
+
+DEFS["Pride_0"] = {"reactiveTop": {"afterCompile": _pride_0_after_compile}, "play": _pride_0_play}
+DEFS["Pride_2"] = {"play": _pride_2_play, "can": {"start": _pride_2_can_start}, "start": _pride_2_start}
+DEFS["Pride_3"] = {"play": _pride_3_play}
+DEFS["Pride_4"] = {"play": _pride_4_play}
+DEFS["Pride_5"] = DISCARD_ONE_DEF
+DEFS["Pride_6"] = {"reactiveTop": {"afterGainControl": _pride_6_after_gain_control}, "play": _pride_6_play}
+
+
+# =============================================================================
+# SLOTH
+# =============================================================================
+def _sloth_0_line_value_self(g, c, _line):
+    above = _directly_above(g, c)
+    return 5 if (above and above.face_up and above.proto == "Sloth") else 0
+
+
+def _sloth_0_play(g, c):
+    g.draw(c.owner, _line_comparison_count(g, c.owner, False))
+
+
+def _sloth_1_play(g, c):
+    returned = _return_one(g, c.owner, lambda x, pi, line: x.uid != c.uid,
+                            {"prompt": "다른 카드 1장을 소유자에게 돌려주세요", "intent": "return"})
+    if returned and returned.owner == c.owner:
+        g.refresh(c.owner)
+
+
+def _sloth_1_after_refresh(g, c, actor, _ctx, snap):
+    if actor != c.owner or not g.players[c.owner]["deck"]:
+        return
+    line = (snap.get("line") if snap else None) or _line_of(g, c)
+    if line and g.can_play_face_down(c.owner, None, line)[0]:
+        g.play_top_face_down(c.owner, line)
+
+
+def _put_hand_card_on_deck_bottom(g, owner):
+    """손 카드 하나를 골라 덱 맨 아래로 보낸다 (Sloth_2)."""
+    hand = g.players[owner]["hand"]
+    card = g.choose_card_from(owner, hand, {
+        "optional": True, "fromHand": True,
+        "prompt": "손 카드 1장을 덱 맨 아래로 보낼 수 있습니다", "intent": "return"})
+    if not card:
+        return None
+    return card if g.put_hand_card_on_deck_bottom(owner, card) else None
+
+
+def _sloth_2_play(g, c):
+    candidates = g.cards_in_play(lambda x, pi, line: x.owner == c.owner and not g.is_uncovered(x)
+                                  and g.can_flip(x))
+    target = g.choose_card_from(c.owner, candidates,
+                                 {"prompt": "내 가려진 카드를 1장 선택하세요", "intent": "flip"})
+    if target:
+        g.flip_card(target)
+
+
+def _sloth_2_can_start(g, c):
+    return len(g.players[c.owner]["hand"]) > 0
+
+
+def _sloth_2_start(g, c):
+    if g.players[c.owner]["hand"]:
+        _put_hand_card_on_deck_bottom(g, c.owner)
+
+
+def _sloth_3_play(g, c):
+    g.discard(_opp(c), 2)
+
+
+def _sloth_4_on_covered(g, c, _incoming, _incoming_face_up):
+    _flip_one(g, c.owner, lambda x, pi, line: x.face_up,
+              {"prompt": "앞면 카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+DEFS["Sloth_0"] = {"passive": {"lineValueSelf": _sloth_0_line_value_self}, "play": _sloth_0_play}
+DEFS["Sloth_1"] = {"play": _sloth_1_play, "reactive": {"afterRefresh": _sloth_1_after_refresh}}
+DEFS["Sloth_2"] = {"play": _sloth_2_play, "can": {"start": _sloth_2_can_start}, "start": _sloth_2_start}
+DEFS["Sloth_3"] = {"play": _sloth_3_play}
+DEFS["Sloth_4"] = {"onCovered": _sloth_4_on_covered}
+DEFS["Sloth_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# WRATH
+# =============================================================================
+def _wrath_0_play(g, c):
+    line = _line_of(g, c)
+    if line and g.players[c.owner]["deck"] and g.can_play_face_down(c.owner, None, line)[0]:
+        g.play_top_face_down(c.owner, line)
+
+
+def _wrath_1_play(g, c):
+    g.draw(c.owner, 1)
+
+
+def _wrath_1_can_finish(g, c):
+    return g.control == c.owner
+
+
+def _wrath_1_finish(g, c):
+    if g.lose_control(c.owner):
+        _delete_one(g, c.owner, lambda x, pi, line: x.face_up,
+                    {"prompt": "앞면 카드 1장을 제거하세요", "intent": "delete"})
+
+
+def _cards_in_line(g, line):
+    return len(g.players[1]["stacks"][line]) + len(g.players[2]["stacks"][line])
+
+
+def _flip_all_face_up_in_line(g, source, line):
+    """이 라인의 앞면 카드를 전부 뒤집되, source 자신이 대상이면 항상
+    마지막에 뒤집는다(먼저 뒤집으면 나머지가 처리되기 전에 자기 자신이
+    조기 중단시킬 수 있음) -- 나머지 순서는 source.owner가 고른다(Wrath_2)."""
+    remaining, self_target = [], None
+    for pi in (1, 2):
+        for card in g.players[pi]["stacks"][line]:
+            if card.face_up and g.can_flip(card):
+                if card is source:
+                    self_target = card
+                else:
+                    remaining.append(card)
+    ordered = []
+    while len(remaining) > 1:
+        pick = g.choose_card_from(source.owner, remaining,
+                                   {"prompt": "다음에 뒤집을 앞면 카드를 선택하세요",
+                                    "intent": "flip"}) or remaining[0]
+        ordered.append(pick)
+        remaining.remove(pick)
+    if remaining:
+        ordered.append(remaining[0])
+    if self_target:
+        ordered.append(self_target)
+    for card in ordered:
+        if g.locate(card)[0] is not None and card.face_up and g.can_flip(card):
+            g.flip_card(card)
+
+
+def _wrath_2_play(g, c):
+    greatest = max(_cards_in_line(g, 1), _cards_in_line(g, 2), _cards_in_line(g, 3))
+    lines = [line for line in (1, 2, 3) if _cards_in_line(g, line) == greatest]
+    line = lines[0]
+    if len(lines) > 1:
+        line = g.choose_line_from(c.owner, lines,
+                                   {"prompt": "카드가 가장 많은 라인을 선택하세요", "intent": "flip"})
+    if not line:
+        return
+    g.command(lambda: _flip_all_face_up_in_line(g, c, line))
+
+
+def _wrath_3_play(g, c):
+    _flip_one(g, c.owner, lambda x, pi, line: x.face_up,
+              {"prompt": "앞면 카드 1장을 뒤집으세요", "intent": "flip"})
+
+
+def _wrath_4_play(g, c):
+    if g.lose_control(c.owner):
+        g.discard(_opp(c), 2)
+
+
+DEFS["Wrath_0"] = {"passive": {"ignoreHighestInLine": True}, "play": _wrath_0_play}
+DEFS["Wrath_1"] = {"play": _wrath_1_play, "can": {"finish": _wrath_1_can_finish}, "finish": _wrath_1_finish}
+DEFS["Wrath_2"] = {"play": _wrath_2_play}
+DEFS["Wrath_3"] = {"play": _wrath_3_play}
+DEFS["Wrath_4"] = {"play": _wrath_4_play}
+DEFS["Wrath_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# FLEXIBLE
+# =============================================================================
+def _flexible_0_play(g, c):
+    any_cards = g.cards_in_play(lambda x, pi, line: g.is_uncovered(x))
+    movable = g.cards_in_play(lambda x, pi, line: g.is_uncovered(x) and g.can_move(x))
+    modes = []
+    if any_cards:
+        modes.append("return")
+    if movable:
+        modes.append("shift")
+    mode = _choose_mode(g, c.owner, modes, "카드 1장을 손패로 되돌릴까요, 이동할까요?",
+                         {"return": "되돌리기", "shift": "이동"})
+    if mode == "return":
+        _return_one(g, c.owner, None, {"prompt": "카드 1장을 선택하세요", "intent": "return"})
+    elif mode == "shift":
+        _move_one(g, c.owner, lambda x, pi, line: g.can_move(x),
+                  {"prompt": "카드 1장을 선택하세요", "intent": "move"})
+
+
+def _flexible_1_play(g, c):
+    flippable = g.cards_in_play(lambda x, pi, line: x.owner == c.owner and g.is_uncovered(x)
+                                 and g.can_flip(x))
+    movable = g.cards_in_play(lambda x, pi, line: x.owner == c.owner and g.is_uncovered(x)
+                               and g.can_move(x))
+    modes = []
+    if flippable:
+        modes.append("flip")
+    if movable:
+        modes.append("shift")
+    mode = _choose_mode(g, c.owner, modes, "내 카드를 뒤집을까요, 이동할까요?",
+                         {"flip": "뒤집기", "shift": "이동"})
+    if mode == "flip":
+        _flip_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
+                  {"prompt": "내 카드를 1장 선택하세요", "intent": "flip"})
+    elif mode == "shift":
+        _move_one(g, c.owner, lambda x, pi, line: x.owner == c.owner,
+                  {"prompt": "내 카드를 1장 선택하세요", "intent": "move"})
+
+
+def _flexible_2_can_finish_top(g, c):
+    above = _directly_above(g, c)
+    return above is not None and not above.face_up and g.can_move(above)
+
+
+def _flexible_2_finish_top(g, c):
+    above = _directly_above(g, c)
+    if above and not above.face_up and g.can_move(above):
+        if _ask(g, c.owner, "이 카드를 덮고 있는 뒷면 카드를 이동하시겠습니까?", "move"):
+            _move_to_other_line(g, c.owner, above)
+
+
+def _flexible_2_play(g, c):
+    g.draw(c.owner, 1)
+
+
+def _flexible_3_play(g, c):
+    opp = _opp(c)
+    movable = g.cards_in_play(lambda x, pi, line: x.owner == opp and g.is_uncovered(x)
+                               and g.can_move(x))
+    modes = ["swap"]
+    if movable:
+        modes.insert(0, "shift")
+    mode = _choose_mode(g, c.owner, modes, "상대 카드를 이동할까요, 프로토콜 2개를 교환할까요?",
+                         {"shift": "카드 이동", "swap": "프로토콜 교환"})
+    if mode == "shift":
+        _move_one(g, c.owner, lambda x, pi, line: x.owner == opp,
+                  {"prompt": "상대 카드 1장을 선택하세요", "intent": "move"})
+    elif mode == "swap":
+        _swap_two(g, c.owner, c.owner)
+
+
+def _flexible_4_can_finish(g, c):
+    p = g.players[c.owner]
+    return not g.draw_blocked(c.owner) and (len(p["deck"]) > 0 or len(p["discard"]) > 0)
+
+
+def _flexible_4_finish(g, c):
+    if _ask(g, c.owner, "카드를 2장 뽑으시겠습니까?", "drawThenFlip"):
+        g.draw(c.owner, 2)
+        # 별개 명령: 뽑기의 반응으로 이 카드가 가려지거나 뒤집히거나
+        # 제거됐으면 일반적인 중단 게이트가 후속 뒤집기를 막는다.
+        g.flip_card(c)
+
+
+DEFS["Flexible_0"] = {"play": _flexible_0_play}
+DEFS["Flexible_1"] = {"play": _flexible_1_play}
+DEFS["Flexible_2"] = {"can": {"finishTop": _flexible_2_can_finish_top},
+                       "finishTop": _flexible_2_finish_top, "play": _flexible_2_play}
+DEFS["Flexible_3"] = {"play": _flexible_3_play}
+DEFS["Flexible_4"] = {"can": {"finish": _flexible_4_can_finish}, "finish": _flexible_4_finish}
+DEFS["Flexible_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# INERT
+# =============================================================================
+def _inert_0_play(g, c):
+    self_line = _line_of(g, c)
+    cands = g.cards_in_play(lambda x, pi, line: line != self_line and x.face_up and g.can_flip(x))
+    pick = g.choose_card_from(c.owner, cands,
+                               {"prompt": "다른 라인의 앞면 카드 1장을 선택하세요", "intent": "flip"})
+    if pick:
+        g.flip_card(pick)
+
+
+def _inert_1_play(g, c):
+    g.discard(_opp(c), 2)
+
+
+def _inert_2_play(g, c):
+    def targets(line):
+        highest = None
+        for pi in (1, 2):
+            for x in g.players[pi]["stacks"][line]:
+                v = _eff_val(x)
+                if highest is None or v > highest:
+                    highest = v
+        out = []
+        if highest is None:
+            return out
+        for pi in (1, 2):
+            for x in g.players[pi]["stacks"][line]:
+                if x.face_up and _eff_val(x) == highest and g.can_flip(x):
+                    out.append(x)
+        return out
+
+    lines = [line for line in (1, 2, 3) if targets(line)]
+    if len(lines) == 1:
+        line = lines[0]
+    elif lines:
+        line = g.choose_line_from(c.owner, lines, {"prompt": "라인을 선택하세요", "intent": "flip"})
+    else:
+        line = None
+    if not line:
+        return
+    pool, self_last = [], None
+    for x in targets(line):
+        if x is c:
+            self_last = x
+        else:
+            pool.append(x)
+    if self_last:
+        pool.append(self_last)
+
+    # 이 목표들은 전부 인쇄된 "모두 뒤집기" 명령 하나에 속한다. 도중 캐스케이드로
+    # Inert가 가려질 수 있지만, 가려짐은 이 명령의 나머지를 취소하지 않는다.
+    def body():
+        for x in pool:
+            g.flip_card(x)
+    g.command(body)
+
+
+def _inert_3_play(g, c):
+    line = _line_of(g, c)
+    others = [l for l in (1, 2, 3) if l != line]
+    _play_hand_face_down_each(g, c.owner, others, "이 라인에 뒷면으로 낼 카드를 선택하세요")
+    # 별개 명령: 상대가 자기 손패에서 골라 이 라인의 자기 쪽에 낸다.
+    opp = _opp(c)
+    if line:
+        _play_hand_face_down(g, opp, line, {"prompt": "이 라인에 뒷면으로 낼 카드를 선택하세요"})
+
+
+def _inert_4_play(g, c):
+    g.discard_deck(c.owner)
+    g.discard_deck(_opp(c))
+
+
+DEFS["Inert_0"] = {"passive": {"suppressOtherTop": True}, "play": _inert_0_play}
+DEFS["Inert_1"] = {"passive": {"suppressOtherBottom": True}, "play": _inert_1_play}
+DEFS["Inert_2"] = {"play": _inert_2_play}
+DEFS["Inert_3"] = {"play": _inert_3_play}
+DEFS["Inert_4"] = {"play": _inert_4_play}
+DEFS["Inert_5"] = DISCARD_ONE_DEF
+
+
+# =============================================================================
+# RIGID (값 0, 6 없음)
+# =============================================================================
+def _rigid_1_play(g, c):
+    _flip_one(g, c.owner, lambda x, pi, line: x.owner == _opp(c) and x.face_up,
+              {"prompt": "상대의 앞면 카드를 1장 선택하세요", "intent": "flip"})
+
+
+def _rigid_1_can_finish(g, c):
+    if not g.players[c.owner]["hand"]:
+        return False
+    line = _line_of(g, c)
+    opp = _opp(c)
+    for l in (1, 2, 3):
+        top = g.top_card(opp, l)
+        if l != line and top and not top.face_up and g.can_play_face_down(c.owner, None, l)[0]:
+            return True
+    return False
+
+
+def _rigid_1_finish(g, c):
+    line = _line_of(g, c)
+    opp = _opp(c)
+    eligible = []
+    for l in (1, 2, 3):
+        top = g.top_card(opp, l)
+        # 상대 스택이 비어 있으면 "드러난 카드"가 아니다.
+        if l != line and top and not top.face_up:
+            eligible.append(l)
+    _play_hand_face_down_each(g, c.owner, eligible, "이 라인에 뒷면으로 낼 카드를 선택하세요")
+
+
+def _rigid_2_after_play(g, c, actor, ctx, _snap):
+    if (actor == c.owner and ctx and ctx.get("usedAction") and ctx.get("card")
+            and not ctx["card"].face_up and g.can_play_face_down(c.owner, None, ctx["line"])[0]):
+        g.play_top_face_down(c.owner, ctx["line"], side=ctx.get("side"))
+
+
+def _rigid_3_play(g, c):
+    line = _line_of(g, c)
+    if line and g.can_play_face_down(c.owner, None, line)[0]:
+        _play_hand_face_down(g, c.owner, line,
+                              {"underCard": c, "prompt": "이 카드 바로 밑에 낼 카드를 선택하세요"})
+
+
+def _rigid_4_on_covered(g, c, _incoming, incoming_face_up):
+    if incoming_face_up is False:
+        g.draw(c.owner, 1)
+
+
+def _can_draw(g, pi):
+    p = g.players[pi]
+    return not g.draw_blocked(pi) and (len(p["deck"]) > 0 or len(p["discard"]) > 0)
+
+
+def _can_play_any(g, pi):
+    for hc in g.players[pi]["hand"]:
+        if _play_dests(g, pi, hc):
+            return True
+    return False
+
+
+def _rigid_7_can_finish_top(g, c):
+    opp = _opp(c)
+    return _can_draw(g, opp) or _can_play_any(g, opp)
+
+
+def _rigid_7_finish_top(g, c):
+    opp = _opp(c)
+    modes = []
+    if _can_draw(g, opp):
+        modes.append("draw")
+    if _can_play_any(g, opp):
+        modes.append("play")
+    mode = _choose_mode(g, opp, modes, "카드 1장을 뽑을까요, 낼까요?", {"draw": "뽑기", "play": "내기"})
+    if mode == "draw":
+        g.draw(opp, 1)
+    elif mode == "play":
+        _play_from_hand(g, opp, lambda hc: bool(_play_dests(g, opp, hc)),
+                         {"prompt": "낼 카드를 선택하세요"})
+
+
+def _rigid_7_play(g, c):
+    g.discard(c.owner, 1)
+
+
+DEFS["Rigid_1"] = {"play": _rigid_1_play, "can": {"finish": _rigid_1_can_finish},
+                    "finish": _rigid_1_finish}
+DEFS["Rigid_2"] = {"reactive": {"afterPlay": _rigid_2_after_play}}
+DEFS["Rigid_3"] = {"play": _rigid_3_play}
+DEFS["Rigid_4"] = {"onCovered": _rigid_4_on_covered}
+DEFS["Rigid_5"] = DISCARD_ONE_DEF
+DEFS["Rigid_7"] = {
+    "cantFlip": True,
+    "cantMove": True,
+    "can": {"finishTop": _rigid_7_can_finish_top},
+    "finishTop": _rigid_7_finish_top,
+    "play": _rigid_7_play,
+}
 
 
 # ---------------------------------------------------------------------------

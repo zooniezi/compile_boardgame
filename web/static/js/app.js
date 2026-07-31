@@ -96,7 +96,6 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ----------------------------------------------------------------------------
 let chosenMode = null;
 let chosenDraft = null;   // 명시적으로 고르게 함 (기본 선택 없음)
-let chosenSet = "all";
 let chosenDifficulty = null;   // vs_ai일 때만 필요
 let chosenFirst = "random";    // 선공 -- 기본값은 무작위 (이미 선택된 채로 시작)
 
@@ -144,18 +143,28 @@ document.querySelectorAll(".mode-btn[data-draft]").forEach((btn) => {
     btn.classList.add("selected");
     chosenDraft = btn.dataset.draft;
     $("#set-select").classList.toggle("hidden", chosenDraft !== "draft");
+    $("#set-select-label").classList.toggle("hidden", chosenDraft !== "draft");
     refreshStartBtn();
   });
 });
+// 세트 선택은 단일 선택이 아니라 복수 선택(체크 토글) -- main1/main2/main3
+// 중 원하는 조합을 자유롭게 고를 수 있어야 한다(각각 짝을 이루는 aux
+// 세트를 함께 포함). 최소 1개는 항상 선택돼 있어야 하므로 마지막 남은
+// 버튼은 꺼지지 않게 막는다.
+const chosenSets = new Set(["main1", "main2", "main3"]);
 document.querySelectorAll(".mode-btn[data-set]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".mode-btn[data-set]").forEach((b) => b.classList.remove("selected"));
-    btn.classList.add("selected");
-    chosenSet = btn.dataset.set;
+    const s = btn.dataset.set;
+    if (chosenSets.has(s)) {
+      if (chosenSets.size === 1) return; // 마지막 하나는 끌 수 없음
+      chosenSets.delete(s);
+      btn.classList.remove("selected");
+    } else {
+      chosenSets.add(s);
+      btn.classList.add("selected");
+    }
   });
 });
-// 세트는 밴픽을 골랐을 때만 보이므로 기본값(전체)을 미리 표시해둬도 어색하지 않다.
-document.querySelector('.mode-btn[data-set="all"]').classList.add("selected");
 
 $("#goto-play-setup-btn").addEventListener("click", () => {
   $("#setup-screen").classList.add("hidden");
@@ -179,7 +188,7 @@ $("#start-btn").addEventListener("click", () => {
   applyNicknames();
   confirmPlayEnabled = $("#confirm-play-toggle").checked;
   if (chosenDraft === "draft") {
-    startDraft(chosenMode, chosenSet);
+    startDraft(chosenMode, chosenSets);
   } else {
     startGame(chosenMode, null);
   }
@@ -339,18 +348,22 @@ const DRAFT_STEPS_META = {
   ],
 };
 
-function setToSetsParam(set) {
-  if (set === "main1") return ["main1", "aux1"];
-  if (set === "main2") return ["main2", "aux2"];
-  return null; // 전체
+// mainN 각각에 짝을 이루는 auxN을 함께 풀어서 draftpool.py에 넘길
+// sets 배열로 만든다. main1/2/3 전부 선택돼 있으면 그냥 전체 카탈로그와
+// 같은 뜻이라 null로 보내도 되지만(DraftPool.sanitize가 어차피 그렇게
+// 접는다), 명시적으로 배열을 그대로 넘겨도 서버 쪽에서 동일하게 처리된다.
+function setsToSetsParam(sets) {
+  const out = [];
+  sets.forEach((s) => { out.push(s, "aux" + s.slice(4)); });
+  return out;
 }
 
-async function startDraft(mode, set) {
+async function startDraft(mode, sets) {
   draftGameMode = mode || "hotseat";
   const res = await fetch("/api/draft/new", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: draftGameMode, sets: setToSetsParam(set) }),
+    body: JSON.stringify({ mode: draftGameMode, sets: setsToSetsParam([...sets]) }),
   });
   const data = await res.json();
   draftId = data.draftId;
@@ -1805,14 +1818,19 @@ function openCodex() {
 
 function codexGroupOf(protoId) {
   const s = (PROTO.set && PROTO.set[protoId]) || "main1";
-  return (s === "main1" || s === "aux1") ? "main1" : "main2";
+  if (s === "main1" || s === "aux1") return "main1";
+  if (s === "main3" || s === "aux3") return "main3";
+  return "main2";
 }
 
 function renderCodexList() {
   const listEl = $("#codex-proto-list");
   listEl.innerHTML = "";
-  const subOrder = codexSet === "main1" ? ["main1", "aux1"] : ["main2", "aux2"];
-  const subLabel = { main1: "MAIN 1", aux1: "AUX 1", main2: "MAIN 2", aux2: "AUX 2" };
+  const subOrder = codexSet === "main1" ? ["main1", "aux1"]
+    : codexSet === "main3" ? ["main3", "aux3"]
+    : ["main2", "aux2"];
+  const subLabel = { main1: "MAIN 1", aux1: "AUX 1", main2: "MAIN 2", aux2: "AUX 2",
+                      main3: "MAIN 3", aux3: "AUX 3" };
   subOrder.forEach((sub) => {
     const protos = (PROTO.list || []).filter((p) => (PROTO.set && PROTO.set[p]) === sub
       || (sub === "main1" && !(PROTO.set && PROTO.set[p])));

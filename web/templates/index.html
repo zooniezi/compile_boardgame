@@ -101,15 +101,16 @@
         </button>
       </div>
 
+      <p class="setup-step-label set-select-label hidden" id="set-select-label">어떤 세트를 쓸까요? (복수 선택)</p>
       <div class="mode-select set-select hidden" id="set-select">
-        <button class="mode-btn small" data-set="main1">
+        <button class="mode-btn small selected" data-set="main1">
           <span class="mode-title">MAIN 1 + AUX 1</span>
         </button>
-        <button class="mode-btn small" data-set="main2">
+        <button class="mode-btn small selected" data-set="main2">
           <span class="mode-title">MAIN 2 + AUX 2</span>
         </button>
-        <button class="mode-btn small" data-set="all">
-          <span class="mode-title">전체</span>
+        <button class="mode-btn small selected" data-set="main3">
+          <span class="mode-title">MAIN 3 + AUX 3</span>
         </button>
       </div>
 
@@ -140,9 +141,10 @@
   <div class="codex-body" id="codex-pane-codex">
     <div id="codex-sidebar-backdrop" class="mobile-drawer-backdrop hidden"></div>
     <aside class="codex-sidebar" id="codex-sidebar">
-      <div class="codex-set-select" id="codex-set-select">
+      <div class="codex-set-select three" id="codex-set-select">
         <button class="mode-btn small selected" data-cset="main1">MAIN 1 + AUX 1</button>
         <button class="mode-btn small" data-cset="main2">MAIN 2 + AUX 2</button>
+        <button class="mode-btn small" data-cset="main3">MAIN 3 + AUX 3</button>
       </div>
       <div class="codex-proto-list" id="codex-proto-list"></div>
     </aside>

@@ -59,10 +59,16 @@ def _line_passive(g, pi, line, flag, uncovered_only=False):
     return None
 
 
-def _proto_allowed_here(g, line, proto):
-    """Unity_1: 프로토콜이 안 맞아도 이 라인에 앞면으로 낼 수 있게 허용됐는가."""
+def _proto_allowed_here(g, line, proto, pi=None):
+    """Unity_1: 프로토콜이 안 맞아도 이 라인에 앞면으로 낼 수 있게 허용됐는가.
+    allowFaceUpHere 값이 문자열이면 그 프로토콜만(Unity_1). True(불리언)면
+    그 카드 소유자 자신의 카드는 전부 허용(Lust_2 "내 카드는 프로토콜이
+    일치하지 않아도 이 스택에 플레이할 수 있다")."""
     for top in g.cards_with_def_field("allowFaceUpHere", {"line": line, "top_only": True}):
-        if top.definition.get("allowFaceUpHere") == proto:
+        flag = top.definition.get("allowFaceUpHere")
+        if flag == proto:
+            return True
+        if flag is True and pi is not None and top.owner == pi:
             return True
     return False
 
@@ -631,9 +637,28 @@ class Engine:
     def line_value(self, pi, line):
         st = self.players[pi]["stacks"][line]
         fd_val = self.facedown_value_in_stack(st)
+
+        # 이 라인(양쪽 스택 통틀어)에서 최고값 카드를 총합에서 제외하는 패시브
+        # (Wrath_0 "이 라인에서 가치가 가장 높은 모든 카드는 총 값에 포함되지
+        # 않는다") -- 라인 어느 쪽에 있어도 활성화된다.
+        ignore_highest = any(
+            c.face_up and c.definition.get("passive", {}).get("ignoreHighestInLine")
+            for side in (1, 2) for c in self.players[side]["stacks"][line])
+        highest = None
+        if ignore_highest:
+            for side in (1, 2):
+                side_fd_val = self.facedown_value_in_stack(self.players[side]["stacks"][line])
+                for c in self.players[side]["stacks"][line]:
+                    v = c.value if c.face_up else side_fd_val
+                    if highest is None or v > highest:
+                        highest = v
+
         total = 0
         for c in st:
-            total += c.value if c.face_up else fd_val
+            v = c.value if c.face_up else fd_val
+            if ignore_highest and v == highest:
+                continue
+            total += v
         # 자기 자신 값 보정 패시브 (Apathy_0)
         for c in st:
             if c.face_up:
@@ -646,6 +671,14 @@ class Engine:
                 delta = c.definition.get("passive", {}).get("lineValueOppDelta")
                 if delta:
                     total += delta
+        # 이 라인 양쪽 모두 동일하게 오르는 패시브 (Lust_0, 라인 어느 쪽에
+        # 있어도 양쪽 총 값에 똑같이 적용).
+        for side in (1, 2):
+            for c in self.players[side]["stacks"][line]:
+                if c.face_up:
+                    bonus = c.definition.get("passive", {}).get("lineValueBoth")
+                    if bonus:
+                        total += bonus
         return total
 
     def winning_line(self, pi, line):
@@ -654,10 +687,22 @@ class Engine:
     def lines_winning_count(self, pi):
         return sum(1 for line in (1, 2, 3) if self.winning_line(pi, line))
 
+    def _blocked_by_opponent_control(self, pi):
+        """Lust_0: 상대가 Control을 갖고 있고, 상대의 드러난 카드 중
+        blockOpponentCompileWithControl이 있으면 pi는 컴파일할 수 없다."""
+        opp = _other(pi)
+        if self.control != opp:
+            return False
+        for line in (1, 2, 3):
+            top = self.top_card(opp, line)
+            if top and top.face_up and top.definition.get("blockOpponentCompileWithControl"):
+                return True
+        return False
+
     def compilable_lines(self, pi):
         """지금 pi가 컴파일할 수 있는 라인들."""
         out = []
-        if self.cant_compile[pi]:
+        if self.cant_compile[pi] or self._blocked_by_opponent_control(pi):
             return out
         for line in (1, 2, 3):
             if (self.line_value(pi, line) >= Rules.COMPILE_THRESHOLD
@@ -696,7 +741,7 @@ class Engine:
             any_proto
             or bool(card.definition.get("freePlay"))
             or any(_line_passive(self, pi, l, "playAnywhere") for l in (1, 2, 3))
-            or _proto_allowed_here(self, line, card.proto)
+            or _proto_allowed_here(self, line, card.proto, pi)
         )
         if not bypass:
             mine_proto = me["protocols"][line]
@@ -1141,28 +1186,36 @@ class Engine:
             else:
                 i += 1
 
-    def play_top_face_down(self, pi, line, under_card=None):
-        """pi의 덱 맨 위 카드를 뒷면으로 line에 낸다."""
+    def play_top_face_down(self, pi, line, under_card=None, side=None):
+        """pi의 덱 맨 위 카드를 뒷면으로 (side 또는 pi 자신의) line에 낸다.
+
+        side가 pi와 다르면 자기 덱 카드를 상대 스택에 얹는 셈이다(Nova_0
+        "덱 맨 위 카드를 드러난 Nova 카드 아래에 낸다" -- 그 Nova가 상대
+        스택에 있을 수도 있음). 기본값(side=None -> pi)은 기존 180장의
+        동작과 완전히 동일하다."""
         if self.effect_interrupted():
             return False
         c = self.pop_deck(pi)
         if not c:
             return False
+        side = pi if side is None else side
         entry = {"key": "ev.playFaceDown", "params": {"p": pi, "line": line}}
         self.logmsg(entry)
 
         def after_land(_e):
             self.emit("playFaceDown", {"player": pi, "line": line, "uid": c.uid, "fromDeck": True,
                                         "noLog": True, "i18n": entry})
-            self.fire_reactive(pi, "afterPlay", {"line": line, "card": c, "side": pi})
+            self.fire_reactive(pi, "afterPlay", {"line": line, "card": c, "side": side})
 
-        e = self.commit(c, {"zone": "field", "pi": pi, "line": line, "faceUp": False,
+        e = self.commit(c, {"zone": "field", "pi": side, "line": line, "faceUp": False,
                              "underCard": under_card}, after_land)
         self.land_commit(e)
         return c
 
-    def play_external(self, actor, card, side_pi, line, face_up):
-        """손에 있지 않은 카드(트래시/덱 top)를 (side_pi, line)에 낸다."""
+    def play_external(self, actor, card, side_pi, line, face_up, under_card=None, used_action=False):
+        """손에 있지 않은 카드(트래시/덱 top)를 (side_pi, line)에 낸다.
+        used_action=True는 "이 턴의 메인 행동 자체가 이 플레이였다"는 뜻
+        (Rigid_2: 카드 효과로 유발된 2차 플레이와 구분하기 위함)."""
         if self.effect_interrupted():
             return False
         card.owner = side_pi
@@ -1174,7 +1227,7 @@ class Engine:
         self.logmsg(entry)
 
         def after_land(_e):
-            ctx = {"line": line, "card": card, "side": side_pi}
+            ctx = {"line": line, "card": card, "side": side_pi, "usedAction": used_action}
             if face_up:
                 self.emit("playFaceUp", {"player": actor, "line": line, "side": side_pi,
                                           "uid": card.uid, "noLog": True, "i18n": entry})
@@ -1188,8 +1241,8 @@ class Engine:
                                             "uid": card.uid, "noLog": True, "i18n": entry})
                 self.fire_reactive(actor, "afterPlay", ctx)
 
-        e = self.commit(card, {"zone": "field", "pi": side_pi, "line": line, "faceUp": face_up},
-                         after_land)
+        e = self.commit(card, {"zone": "field", "pi": side_pi, "line": line, "faceUp": face_up,
+                                "underCard": under_card}, after_land)
         self.land_commit(e)
         return True
 
@@ -1244,12 +1297,28 @@ class Engine:
                 return p["hand"].pop(i)
         return None
 
-    def play_card(self, pi, uid, line, face_up, side_pi=None):
-        """손 카드(uid)를 line에 낸다."""
+    def put_hand_card_on_deck_bottom(self, pi, card):
+        """손 카드 하나를 자신의 덱 맨 아래로 보낸다 (Sloth_2). 덱 리스트는
+        끝이 맨 위(top)인 관례라 맨 아래는 인덱스 0."""
+        if self.effect_interrupted():
+            return False
+        p = self.players[pi]
+        if card not in p["hand"]:
+            return False
+        p["hand"].remove(card)
+        p["deck"].insert(0, card)
+        self.emit("handToDeckBottom", {"player": pi,
+                                        "i18n": {"key": "ev.handToDeckBottom", "params": {"p": pi}}})
+        return True
+
+    def play_card(self, pi, uid, line, face_up, side_pi=None, under_card=None, used_action=False):
+        """손 카드(uid)를 line에 낸다. under_card를 주면 그 카드 바로 밑으로
+        슬라이드해 들어간다(새로 덮는 게 아니므로 커버 트리거 없음 -- Rigid_3
+        "이 카드 바로 밑에 낸다")."""
         card = self.take_from_hand(pi, uid)
         if not card:
             return False
-        return self.play_external(pi, card, side_pi or pi, line, face_up)
+        return self.play_external(pi, card, side_pi or pi, line, face_up, under_card, used_action)
 
     def legal_actions(self, pi):
         """pi의 모든 합법적 행동을 나열 (AI + "낼 게 없음" 판정용)."""
@@ -1284,7 +1353,8 @@ class Engine:
         if action["kind"] == "refresh":
             self.refresh(pi)
         elif action["kind"] == "play":
-            self.play_card(pi, action["uid"], action["line"], action["faceUp"], action.get("side"))
+            self.play_card(pi, action["uid"], action["line"], action["faceUp"], action.get("side"),
+                            used_action=True)
 
     # -------------------------------------------------------------------
     # 삭제 / 반환 / 뒤집기 / 이동 프리미티브 (필드 위 카드에 대해 동작)
@@ -1419,6 +1489,10 @@ class Engine:
             return False
         return True
 
+    def can_move(self, card):
+        """Rigid_7 "이동할 수 없음"."""
+        return not card.definition.get("cantMove")
+
     def flip_card(self, card, opts=None):
         """필드의 카드를 뒤집는다. 앞면으로 뒤집히면 Middle 명령이 다시 발동."""
         if self.effect_interrupted():
@@ -1442,8 +1516,13 @@ class Engine:
             self.resolve_middle(card, "flip")
 
     def move_card(self, card, to_player, to_line):
-        """카드를 toPlayer의 toLine 스택 맨 위로 옮긴다 (shift)."""
+        """카드를 toPlayer의 toLine 스택 맨 위로 옮긴다 (shift). Rigid_7
+        "이동할 수 없음"은 여기 한 곳에서 강제한다 -- can_flip()이
+        flip_card()에서 강제되는 것과 같은 방식으로, 호출부마다 canMove를
+        따로 필터링하지 않아도 항상 지켜진다."""
         if self.effect_interrupted():
+            return False
+        if not self.can_move(card):
             return False
         pi, line, idx = self.locate(card)
         if pi is None:
@@ -1487,13 +1566,43 @@ class Engine:
     # -------------------------------------------------------------------
     # 컴파일 + Control
     # -------------------------------------------------------------------
+    def _set_control(self, pi):
+        """Control을 pi에게 넘긴다 (이미 pi가 갖고 있으면 아무 일도 안 하고 False).
+        자동 규칙(check_control)과 카드 효과의 gain_control() 양쪽이 공유하는
+        경로 -- afterGainControl 반응 트리거가 어느 경로로 왔든 일관되게
+        발동해야 하므로(Main3 Envy_1/Lust_4/Pride_6 등이 이 반응에 의존)."""
+        if self.control == pi:
+            return False
+        self.control = pi
+        self.emit("control", {"player": pi,
+                               "i18n": {"key": "ev.controlTake", "params": {"p": pi}}})
+        self.fire_reactive(pi, "afterGainControl")
+        return True
+
     def check_control(self):
         pi = self.turn
         if self.lines_winning_count(pi) >= 2:
-            if self.control != pi:
-                self.control = pi
-                self.emit("control", {"player": pi,
-                                       "i18n": {"key": "ev.controlTake", "params": {"p": pi}}})
+            self._set_control(pi)
+
+    def gain_control(self, pi):
+        """카드 효과로 Control을 직접 가져온다(Envy_1/Lust_0/Nova_2 등, Main3) --
+        2라인 이상 지배 시 자동으로 부여되는 것과 별개의 명시적 경로."""
+        if self.effect_interrupted():
+            return False
+        return self._set_control(pi)
+
+    def lose_control(self, pi):
+        """카드 효과로 Control을 포기한다(Lust_3/Lust_4/Wrath_1/Wrath_4 등, Main3).
+        실제로 뭔가 바뀌었으면 True를 반환 -- 호출부가 `if g:loseControl(pi)
+        then ...`처럼 후속 효과를 게이팅하는 계약과 동일하게 맞춤."""
+        if self.effect_interrupted():
+            return False
+        if self.control != pi:
+            return False
+        self.control = None
+        self.emit("control", {"player": None,
+                               "i18n": {"key": "ev.controlLose", "params": {"p": pi}}})
+        return True
 
     def swap_protocols(self, pi, a, b):
         """두 라인의 프로토콜 카드를 맞바꾼다. 밑에 깔린 카드 스택은 움직이지 않음."""
@@ -1512,6 +1621,7 @@ class Engine:
                                       "compiled": p["compiled"][b]},
                                  ],
                                  "i18n": {"key": "ev.rearrange", "params": {"p": pi, "a": a, "b": b}}})
+        self.fire_reactive(pi, "afterRearrange")
 
     def rearrange_protocols(self, pi, order):
         """order[슬롯] = 그 슬롯으로 갈 프로토콜이 원래 있던 라인. 전체 재배열."""
@@ -1530,6 +1640,7 @@ class Engine:
                               "proto": new_proto[slot], "compiled": new_comp[slot]})
         self.emit("rearrange", {"player": pi, "moves": moves or None,
                                  "i18n": {"key": "ev.rearrangeFull", "params": {"p": pi}}})
+        self.fire_reactive(pi, "afterRearrange")
 
     def swap_stacks(self, pi, a, b):
         """Mirror_2: 두 스택 전체를 통째로 맞바꾼다 (커버/uncover 트리거 없음)."""
@@ -1718,12 +1829,25 @@ class Engine:
                 return i
         return 0
 
+    def _other_bottom_suppressed(self, line, excluding_card):
+        """Inert_1 "이 라인의 다른 모든 카드는 하단 명령어가 없는 것으로
+        취급": line의 양쪽 스택 중 excluding_card가 아닌 uncovered 앞면
+        카드에 suppressOtherBottom이 있으면 True."""
+        for side in (1, 2):
+            for x in self.players[side]["stacks"][line]:
+                if (x is not excluding_card and x.face_up and self.is_uncovered(x)
+                        and x.definition.get("passive", {}).get("suppressOtherBottom")):
+                    return True
+        return False
+
     def phase_trigger_resolvable(self, e):
         """이 페이즈 트리거가 지금 실제로 뭔가를 할 수 있는가? (무의미한 선택지 배제용)"""
         c = e["card"]
-        pi, _, _ = self.locate(c)
+        pi, line, _ = self.locate(c)
         visible = c.face_up and pi is not None and (e["band"] == "top" or self.is_uncovered(c))
         if not visible or not c.definition.get(e["field"]):
+            return False
+        if line is not None and self._other_bottom_suppressed(line, c):
             return False
         can_map = c.definition.get("can")
         can = can_map.get(e["field"]) if can_map else None

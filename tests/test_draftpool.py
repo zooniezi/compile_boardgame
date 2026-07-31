@@ -2,10 +2,10 @@ from src.game import draftpool as DraftPool
 from src.game import protocols as Protocols
 
 
-def test_count_for_default_is_all_30():
-    assert DraftPool.count_for(None) == 30
-    assert DraftPool.count_for({}) == 30
-    assert DraftPool.count_for([]) == 30
+def test_count_for_default_is_all_45():
+    assert DraftPool.count_for(None) == 45
+    assert DraftPool.count_for({}) == 45
+    assert DraftPool.count_for([]) == 45
 
 
 def test_count_for_specific_sets():
@@ -49,7 +49,7 @@ def test_sanitize_dedupes_and_ignores_invalid_set_names():
 
 def test_build_default_returns_full_catalog():
     pool = DraftPool.build(None)
-    assert len(pool) == 30
+    assert len(pool) == 45
     assert set(pool) == set(Protocols.PROTOCOL_LIST)
 
 
@@ -61,7 +61,7 @@ def test_build_restricted_to_one_set():
 
 def test_build_falls_back_to_full_catalog_when_too_small():
     pool = DraftPool.build({"sets": ["aux1"]})
-    assert len(pool) == 30
+    assert len(pool) == 45
 
 
 def test_build_blind_mode_shuffles_and_truncates():

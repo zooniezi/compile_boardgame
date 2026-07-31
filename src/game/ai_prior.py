@@ -308,6 +308,135 @@ TAGS["Unity_3"] = {"flip": {"n": 1, "may": True}}
 TAGS["Unity_4"] = {"ongoing": True}  # End: 손패 비었으면 단결 카드 전부 뽑기
 TAGS["Unity_5"] = {"self_discard": 1}
 
+# =============================================================================
+# MAIN 3 -- AMBUSH / ENVY / FULCRUM / GLUTTONY / GREED / LUST / MOMENTUM /
+# NOVA / OVERWHELM / PRIDE / SLOTH / WRATH
+# AUX 3 -- FLEXIBLE / INERT / RIGID
+# carddefs.py의 _ambush_*, _envy_* 등(260731.md §9 이후 포팅분)과 대조해서
+# 채움. Control 획득/포기, 여러 트리거가 얽힌 카드는 기존 관례대로 정밀
+# 모델링 대신 ongoing=True로 보수적으로 처리(시뮬레이션이 실제 값을 앎).
+# =============================================================================
+
+# --- AMBUSH ---
+TAGS["Ambush_0"] = {"draw": 3, "flip": {"n": 1, "owner": "own"}}
+TAGS["Ambush_1"] = {"ongoing": True}  # 값0·1 내 카드 전부 뒤집고 뒤집은 수만큼 뽑기(가변)
+TAGS["Ambush_2"] = {"prior": 0.5}  # 내 가려진 최저값 카드 재배치
+TAGS["Ambush_3"] = {"flip": {"n": 1, "owner": "enemy"}}
+TAGS["Ambush_4"] = {"draw": 1}  # 조건부(드러난 뒷면 카드 필요) 낙관적 근사
+TAGS["Ambush_5"] = {"self_discard": 1}
+
+# --- ENVY ---
+TAGS["Envy_0"] = {"ongoing": True}  # 패시브: 상대 최고값만큼 이 라인 값 증가
+TAGS["Envy_1"] = {"ongoing": True}  # 조건부 뒤집기 + 시작 조건부 컨트롤 탈취
+TAGS["Envy_2"] = {"draw": 2}  # 상대 손패 수만큼(근사)
+TAGS["Envy_3"] = {"ongoing": True}  # 리액티브: 상대가 이 라인에 낸 뒤 덱 맨 위 뒷면 플레이
+TAGS["Envy_4"] = {"ongoing": True}  # 조건부(상대 컴파일 수 > 나) 뒤집기
+TAGS["Envy_5"] = {"self_discard": 1}
+
+# --- FULCRUM ---
+TAGS["Fulcrum_0"] = {"ongoing": True}  # 조건부(손패 0장) 상대 버리기
+TAGS["Fulcrum_1"] = {"prior": 1.0}  # 다른 앞면 카드 전부 뒤집기(양날) + 스택 교환
+TAGS["Fulcrum_2"] = {"ongoing": True}  # 조건부(손패 정확히 2장) 상대 카드 제거
+TAGS["Fulcrum_3"] = {"draw": 1, "prior": 0.5}  # 뽑기 + 좌우 프로토콜 교환
+TAGS["Fulcrum_4"] = {"draw": 1}  # 조건부(손패 정확히 4장) 낙관적 근사
+TAGS["Fulcrum_5"] = {"self_discard": 1}
+
+# --- GLUTTONY ---
+TAGS["Gluttony_0"] = {"ongoing": True}  # 리액티브(캐시 정리 후 덱플레이) + 반환 + 뽑기
+TAGS["Gluttony_1"] = {"draw": 2, "ongoing": True}  # 뽑기 + 리액티브(캐시 정리 후 제거, 자기포함)
+TAGS["Gluttony_2"] = {"draw": 3}  # 내 손패 수만큼(근사)
+TAGS["Gluttony_3"] = {"draw": 2}  # + 종료 조건부 제거(방어적 보너스, 근사 생략)
+TAGS["Gluttony_4"] = {"ongoing": True}  # 리액티브: 내가 리프레시한 뒤 뽑기
+TAGS["Gluttony_5"] = {"self_discard": 1}
+
+# --- GREED ---
+TAGS["Greed_0"] = {"ongoing": True}  # 손패 전부 버리기 + 제거 + 리액티브 뽑기(가변)
+TAGS["Greed_1"] = {"ongoing": True}  # 조건부(10 이상+우세) 즉시 컴파일 -- 강력하지만 조건부
+TAGS["Greed_2"] = {"opp_discard": 1}  # + 시작 선택적 반환
+TAGS["Greed_3"] = {"prior": 0.5}  # 이 스택 내 가려진 카드 재배치
+TAGS["Greed_4"] = {"ongoing": True}  # 선택적 손패 전부 버리기 -> 뒤집기(가변)
+TAGS["Greed_5"] = {"self_discard": 1}
+
+# --- LUST (값 1 없음) ---
+TAGS["Lust_0"] = {"ongoing": True}  # 패시브(양쪽 +10) + 컨트롤 탈취 + 상대 컴파일 봉쇄
+TAGS["Lust_2"] = {"ongoing": True}  # 패시브(프로토콜 무관 플레이) + 선택적 상대 카드 이동
+TAGS["Lust_3"] = {"ongoing": True}  # 상대 무작위 카드 공개+상대쪽 플레이 + 종료 조건부 컨트롤 포기
+TAGS["Lust_4"] = {"ongoing": True}  # 손패 공개 + 상대 컨트롤 박탈 + 리액티브 뽑기
+TAGS["Lust_5"] = {"self_discard": 1}
+TAGS["Lust_6"] = {"self_discard": 1, "prior": -0.5}  # + 상대에게 강제 뒷면 플레이 시킴(약한 이득)
+
+# --- MOMENTUM (값 2 없음) ---
+TAGS["Momentum_0"] = {"prior": 1.0}  # 컴파일된 라인마다 덱 맨 위 뒷면 플레이(라인 수 가변)
+TAGS["Momentum_1"] = {"ongoing": True}  # 리액티브 2종(컴파일 후 덱플레이, 재배열 후 버리기+뽑기)
+TAGS["Momentum_3"] = {"draw": 2}
+TAGS["Momentum_4"] = {"prior": 0.5}  # 내 프로토콜 재배열
+TAGS["Momentum_5"] = {"self_discard": 1}
+TAGS["Momentum_6"] = {"self_discard": 1, "ongoing": True}  # + 리액티브 자기 제거(컴파일 후)
+
+# --- NOVA ---
+TAGS["Nova_0"] = {"ongoing": True}  # 시작 조건부 제거 + 컨트롤자가 재배열 + 종료 조건부 덱플레이
+TAGS["Nova_1"] = {"opp_discard": 2}  # 이 스택 카드 수만큼(근사)
+TAGS["Nova_2"] = {"ongoing": True}  # 조건부 재배열or컨트롤 탈취 + 리액티브 이동
+TAGS["Nova_3"] = {"prior": 0.5}  # 스택 카드 수보다 값 낮은 카드 이동
+TAGS["Nova_4"] = {"flip": {"n": 1}}  # 스택 카드 수보다 값 낮은 카드 뒤집기
+TAGS["Nova_5"] = {"self_discard": 1}
+
+# --- OVERWHELM (값 0 없음) ---
+TAGS["Overwhelm_1"] = {"prior": 1.0}  # 우세한 각 라인에 덱 맨 위 뒷면 플레이(라인 수 가변)
+TAGS["Overwhelm_2"] = {"ongoing": True}  # 종료 전 라인 덱플레이+자기뒤집기 + 상대도 전 라인 덱플레이
+TAGS["Overwhelm_3"] = {"ongoing": True}  # 종료 조건부(손패 5장 이상) 덱플레이
+TAGS["Overwhelm_4"] = {"ongoing": True}  # 조건부(카드 수 우세) 상대 최저값 가려진 카드 제거
+TAGS["Overwhelm_5"] = {"self_discard": 1}
+TAGS["Overwhelm_6"] = {"ongoing": True}  # 시작 조건부(상대 우세) 자기 뒤집기 -- 대체로 손해
+
+# --- PRIDE (값 1 없음) ---
+TAGS["Pride_0"] = {"ongoing": True}  # 리액티브(컴파일 후 리프레시) + 조건부 카드 이동
+TAGS["Pride_2"] = {"draw": 1}  # 우세 라인 수만큼(근사) + 시작 조건부 추가 뽑기
+TAGS["Pride_3"] = {"flip": {"n": 1, "owner": "own"}}
+TAGS["Pride_4"] = {"ongoing": True}  # 조건부(컨트롤 보유) 상대 카드 이동
+TAGS["Pride_5"] = {"self_discard": 1}
+TAGS["Pride_6"] = {"ongoing": True}  # 리액티브/조건부 자기 뒤집기 -- 대체로 손해
+
+# --- SLOTH ---
+TAGS["Sloth_0"] = {"ongoing": True}  # 패시브(나태 카드 밑이면 +5) + 열세 라인 수만큼 뽑기
+TAGS["Sloth_1"] = {"ongoing": True}  # 반환 + 조건부 리프레시 + 리액티브 덱플레이
+TAGS["Sloth_2"] = {"flip": {"n": 1, "owner": "own"}, "ongoing": True}  # + 시작 선택적 손->덱바닥
+TAGS["Sloth_3"] = {"opp_discard": 2}
+TAGS["Sloth_4"] = {"ongoing": True}  # onCovered: 앞면 카드 1장 먼저 뒤집기
+TAGS["Sloth_5"] = {"self_discard": 1}
+
+# --- WRATH ---
+TAGS["Wrath_0"] = {"ongoing": True}  # 패시브(최고값 카드 무효) + 덱 맨 위 뒷면 플레이
+TAGS["Wrath_1"] = {"draw": 1, "ongoing": True}  # + 종료 조건부 컨트롤 포기->제거
+TAGS["Wrath_2"] = {"prior": -0.5}  # 카드 최다 라인 앞면 전부 뒤집기(양날, 대체로 위험)
+TAGS["Wrath_3"] = {"flip": {"n": 1}}
+TAGS["Wrath_4"] = {"ongoing": True}  # 컨트롤 포기 -> 상대 버리기(조건부)
+TAGS["Wrath_5"] = {"self_discard": 1}
+
+# --- FLEXIBLE ---
+TAGS["Flexible_0"] = {"prior": 0.5}  # 카드 1장 반환 또는 이동(대상 제한 없음)
+TAGS["Flexible_1"] = {"prior": 0.5}  # 내 카드 1장 뒤집기 또는 이동
+TAGS["Flexible_2"] = {"draw": 1}  # + 종료 조건부 뒷면 카드 이동
+TAGS["Flexible_3"] = {"prior": 0.5}  # 상대 카드 이동 또는 내 프로토콜 2개 교환
+TAGS["Flexible_4"] = {"ongoing": True}  # 종료 선택적 뽑기2 -> 뒤집기
+TAGS["Flexible_5"] = {"self_discard": 1}
+
+# --- INERT ---
+TAGS["Inert_0"] = {"ongoing": True}  # 패시브(이 라인 상단명령 무효) + 다른 라인 뒤집기
+TAGS["Inert_1"] = {"opp_discard": 2}  # + 패시브(이 라인 하단명령 무효)
+TAGS["Inert_2"] = {"prior": -0.3}  # 한 라인 최고값 카드 전부 뒤집기(양날, 대체로 위험)
+TAGS["Inert_3"] = {"ongoing": True}  # 손패 소모해 다른 각 라인 뒷면 플레이 + 상대도 여기 플레이
+TAGS["Inert_4"] = {"ongoing": True}  # 내 덱 전체 버리기 + 상대 덱 전체 버리기(상호)
+TAGS["Inert_5"] = {"self_discard": 1}
+
+# --- RIGID (값 0, 6 없음) ---
+TAGS["Rigid_1"] = {"flip": {"n": 1, "owner": "enemy"}, "ongoing": True}  # + 종료 조건부 뒷면 플레이
+TAGS["Rigid_2"] = {"ongoing": True}  # 리액티브: 내 행동 뒷면 플레이 후 덱 맨 위 추가 플레이
+TAGS["Rigid_3"] = {"prior": 0.3}  # 손 카드를 이 카드 바로 밑에 뒷면으로
+TAGS["Rigid_4"] = {"ongoing": True}  # onCovered: 뒷면 카드에 덮이려 할 때 먼저 뽑기(방어)
+TAGS["Rigid_5"] = {"self_discard": 1}
+TAGS["Rigid_7"] = {"self_discard": 1, "ongoing": True}  # 뒤집기/이동 불가 + 종료 상대에게 뽑기or플레이
+
 
 def _other(pi):
     return 2 if pi == 1 else 1
@@ -831,7 +960,23 @@ def choose_line(g, req):
             return g.line_value(o, l) + bonus
         return best(score_delete)
     if intent in ("play", "move"):
-        return best(lambda l: g.line_value(me, l) - g.line_value(o, l) * 0.3)
+        # "각 라인마다 카드를 낸다" 류 효과(Life_0/Smoke_0/Momentum_0/
+        # Overwhelm_1/Overwhelm_2 등)가 라인을 하나씩 순서대로 물을 때,
+        # 지금 발동 중인 카드 자신이 있는 라인을 맨 먼저 채우면 스스로를
+        # 덮어버려서 남은 라인들이 처리되기도 전에 명령이 중단된다(공식
+        # FAQ: "이 과정에서 [카드]가 다른 카드에 의해 가려지면, 가운데
+        # 명령은 즉시 중단됩니다" -- ai_prior.py 상단 주석, _smoke_0_play
+        # 참고). 다른 후보가 남아있는 한 그 라인은 맨 뒤로 미룬다.
+        source_uid = req.get("sourceUid")
+
+        def score_play(l):
+            s = g.line_value(me, l) - g.line_value(o, l) * 0.3
+            if source_uid is not None and len(cands) > 1:
+                top = g.top_card(me, l)
+                if top and top.uid == source_uid:
+                    s -= 1000
+            return s
+        return best(score_play)
     return best(lambda l: g.line_value(me, l))
 
 

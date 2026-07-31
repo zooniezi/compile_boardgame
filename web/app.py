@@ -125,12 +125,21 @@ def _serialize(e):
     규칙으로 노출 범위를 정한다:
     - 소유자가 AI면: 항상 감춘다 (누구 턴이든 사람이 절대 못 보게).
     - 소유자가 사람이고, 상대도 사람(hotseat)이면: 지금 그 소유자의
-      턴일 때만 보여준다 (상대가 자기 턴에 내 패를 못 보게).
+      턴일 때만 보여준다 (상대가 자기 턴에 내 패를 못 보게). 단, 지금
+      대기 중인 입력 프롬프트의 실제 응답자(chooser)가 이 소유자라면
+      턴 주인이 상대여도 보여준다 -- Lust_6/Inert_3처럼 카드 효과가
+      "상대는 자기 손패에서 골라라"를 강제하는 경우, 응답자는 소유자
+      자신인데 e.turn은 여전히 카드를 낸 쪽이라 원래 규칙만으로는 자기
+      손패가 안 보여서 고를 카드 정보가 null로 나오는 문제가 있었다.
     - 소유자가 사람이고, 상대는 AI(vs_ai)면: 항상 보여준다 -- 화면을
       보는 사람은 한 명뿐이라 자기 자신에게 숨길 이유가 없다 (AI 턴이라고
       내 손패까지 같이 숨겨지면 안 됨).
     앞면(공개) 카드와 버림더미는 원래 공개 정보라 그대로 보낸다.
     """
+    pending_chooser = None
+    if e.pending and e.pending.get("kind") == "input":
+        pending_chooser = e.pending.get("req", {}).get("chooser")
+
     players = {}
     for pi in (1, 2):
         p = e.players[pi]
@@ -140,7 +149,7 @@ def _serialize(e):
         elif opp["isAI"]:
             visible = True  # vs_ai: 사람은 한 명뿐이니 항상 자기 걸 봄
         else:
-            visible = e.turn == pi  # hotseat: 지금 자기 턴일 때만
+            visible = (e.turn == pi) or (pending_chooser == pi)  # hotseat
 
         def hand_card(c, _visible=visible):
             return _card_dict(c, hidden=not _visible)

@@ -1,16 +1,16 @@
 """ai_prior.py -- 카드 효과 태그 + 상황별 채점(effect_prior) 회귀 테스트.
 
-180장 전부 채워짐 (Aux1 18 + Main1 72 + Main2 72 + Aux2 18).
+270장 전부 채워짐 (Aux1 18 + Main1 72 + Main2 72 + Aux2 18 + Main3 72 + Aux3 18).
 """
 
 import pytest
 
 from src.game.carddefs import DEFS
 from src.game.engine import Engine
-from src.game.ai_prior import TAGS, effect_prior, defusable_threat, plan_rearrange, score_action
+from src.game.ai_prior import TAGS, effect_prior, defusable_threat, plan_rearrange, score_action, choose_line
 
 
-def test_all_180_cards_have_a_tag():
+def test_all_270_cards_have_a_tag():
     missing = [k for k in DEFS if k not in TAGS]
     assert not missing, f"태그 없는 카드({len(missing)}장): {missing}"
 
@@ -20,9 +20,9 @@ def test_no_tag_points_to_a_nonexistent_card():
     assert not orphan, f"존재하지 않는 카드를 가리키는 태그: {orphan}"
 
 
-def test_tags_cover_exactly_180_cards():
-    assert len(TAGS) == 180
-    assert len(DEFS) == 180
+def test_tags_cover_exactly_270_cards():
+    assert len(TAGS) == 270
+    assert len(DEFS) == 270
 
 
 def _card(g, proto, value, owner, face_up=True):
@@ -274,3 +274,28 @@ def test_water_1_unconditional_deck_plays_still_flat_two():
     e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
     c = _card(e, "Water", 1, 1)
     assert effect_prior(e, 1, c) == pytest.approx(2.0)
+
+
+def test_choose_line_defers_the_currently_resolving_cards_own_line():
+    """Overwhelm_2 실전 버그(사용자 리포트): "각 라인마다 카드를 낸다" 류
+    효과(Life_0/Smoke_0/Momentum_0/Overwhelm_1/Overwhelm_2)가 라인을 하나씩
+    순서대로 물을 때, AI가 지금 발동 중인 카드 자신이 있는 라인을 먼저
+    골라버리면 그 즉시 자기 자신을 덮어 명령이 조기 중단된다(공식 FAQ).
+    다른 후보가 남아있는 한 그 라인은 맨 뒤로 미뤄야 한다."""
+    e = Engine(protocols1=["Overwhelm", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    source = _card(e, "Overwhelm", 2, 1)  # 소스 카드 자신 -- 라인 1에 홀로 있어
+    e.players[1]["stacks"][1].append(source)  # 값 2로 자연스럽게 가장 유리한 라인이 됨
+
+    req = {"type": "chooseLine", "chooser": 1, "candidates": [1, 2, 3], "intent": "play",
+           "sourceUid": source.uid}
+    assert choose_line(e, req) != 1  # 자기 라인이 제일 유리해도 다른 후보부터
+
+    # 다른 후보가 하나도 없으면(그 라인만 남았으면) 당연히 그 라인을 골라야 함.
+    req_only = {"type": "chooseLine", "chooser": 1, "candidates": [1], "intent": "play",
+                "sourceUid": source.uid}
+    assert choose_line(e, req_only) == 1
+
+    # sourceUid가 없으면(다른 카드가 발동한 chooseLine) 기존처럼 그냥
+    # 값 기준으로 고른다 -- 이번 수정이 무관한 상황까지 바꾸면 안 됨.
+    req_no_source = {"type": "chooseLine", "chooser": 1, "candidates": [1, 2, 3], "intent": "play"}
+    assert choose_line(e, req_no_source) == 1
