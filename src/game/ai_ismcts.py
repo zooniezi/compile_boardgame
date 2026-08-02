@@ -5,13 +5,20 @@ Engine.ai_modules[pi] = ISMCTSAI()로 꽂으면 동작한다. RandomAI/Heuristic
 동일한 decide(g, req) / planRearrange(g, pi, compiling_line) 인터페이스를
 그대로 따른다.
 
-핵심 아이디어: "action"(카드 플레이/리프레시) 타입 결정 지점만 트리 노드로
-삼고, 그 사이의 모든 하위 결정(chooseCard, chooseLine, planRearrange 등)은
-롤아웃 정책(기본 HeuristicAI)이 대신 답한다. 매 반복(iteration)마다
-Engine.clone_at_decision()으로 새 클론을 만들고 ai_sim.determinize()로
-숨은 정보(상대 손패, 상대 덱 순서, 상대 소유 뒷면 카드)를 무작위로
-재구성한 뒤, 그 안에서 UCB1 기반 선택 -> 확장 -> 롤아웃 -> 역전파를 한 번
-수행한다.
+핵심 아이디어(2026-08-03 개편): "action"(카드 플레이/리프레시) 결정뿐 아니라,
+그 액션이 여는 "내"(pi0) 하위 결정(chooseCard/chooseLine/chooseOption/
+chooseHandCards/planRearrange/yesno) 전부를 같은 트리에서 UCB1으로 분기한다
+-- 참고용 Lua 구현(ai_mcts.lua)의 candidatesFor()/keyOf()/select-expand-
+rollout 한 방 루프를 그대로 옮긴 구조다. 이 파일 안에서 "Lua:"로 시작하는
+주석은 그 대응 관계를 표시한다. 상대(opponent)의 프롬프트와, 분기하기엔
+후보가 너무 많거나(>_NODE_CAND_CAP) 모양이 안 맞는 프롬프트는 여전히
+롤아웃 정책(기본 HeuristicAI)이 즉답한다.
+
+매 반복(iteration)마다 Engine.clone_at_decision()으로 새 클론을 만들고
+ai_sim.determinize()로 숨은 정보(상대 손패, 상대 덱 순서, 상대 소유 뒷면
+카드)를 무작위로 재구성한 뒤, 그 안에서 select(트리를 따라 UCB로 내려가다가
+처음 보는 정보집합에서 expand) -> rollout(그 뒤는 정책이 흘려보냄) ->
+backpropagate를 한 번 수행한다.
 
 트리 노드는 "정보집합" 단위로 관리된다 -- 즉 뿌리 플레이어(pi0, 탐색을
 수행하는 자기 자신)가 실제로 구별할 수 없는 상황들은 전부 같은 노드로
@@ -20,30 +27,113 @@ Engine.clone_at_decision()으로 새 클론을 만들고 ai_sim.determinize()로
 손패를 키에 넣으면, 반복마다 다른 가상 손패가 서로 다른 노드로 쪼개져
 트리 재사용이 무너진다.
 
-포팅 원본 없음 -- ai_ismcts_plan.md의 설계를 구현한 것.
+포팅 원본: ai_mcts.lua(설계와 select-expand-rollout 구조), ai_ismcts_plan.md
+(원래 액션 전용 골격).
 """
 
 import math
 
 from src.game.ai_heuristic import HeuristicAI
-from src.game.ai_sim import determinize, evaluate
+from src.game.ai_sim import determinize, evaluate, DECLINE
 
-# 롤아웃/선택 루프의 무한 진행을 막는 안전장치. ai_sim.playout()의
-# guard < 8000 관례와 동일한 크기를 쓴다.
+# 한 반복(select+expand+rollout 전체)의 무한 진행을 막는 안전장치. Lua
+# ai_mcts.lua의 `while guard < 8000`과 동일한 상수 -- 예전엔 선택 단계
+# (_MAX_SELECTION_DEPTH=500)와 롤아웃 단계(_ROLLOUT_GUARD=8000)가 따로
+# 있었지만, 이번 개편으로 한 루프가 됐으니 가드도 하나로 합친다.
 _ROLLOUT_GUARD = 8000
-# 선택 단계가 병적으로 같은 정보집합을 계속 맴도는 경우를 막는 깊이 상한.
-_MAX_SELECTION_DEPTH = 500
+# 하위 결정 노드 하나가 가질 수 있는 최대 분기 수 (Lua의 NODE_CAND_CAP과
+# 동일). 이보다 후보가 많으면(예: 전체 보드 카드 중 아무거나) 트리에 안
+# 넣고 롤아웃 정책이 즉답 -- 클론 재생 비용이 지배적이라 무제한 분기는
+# 감당이 안 된다.
+_NODE_CAND_CAP = 12
 
 
 def _other(pi):
     return 2 if pi == 1 else 1
 
 
-def _action_key(action):
-    """legal_actions()가 내놓는 액션 딕셔너리를 해시 가능한 키로 압축.
-    필드가 전부 원시 타입이라 그대로 튜플화할 수 있다."""
-    return (action["kind"], action.get("uid"), action.get("line"),
-            action.get("faceUp"), action.get("side"))
+def _answer_key(v):
+    """분기 후보 답변 하나를 해시 가능한 키로 압축한다 (Lua ai_mcts.lua의
+    keyOf() 대응). 답변은 네 가지 모양뿐이다: action 딕셔너리(kind 필드로
+    식별), 재배치 plan 딕셔너리(who+order), chooseHandCards의 uid
+    리스트, 그 외 원시 스칼라(bool/int/str) -- DECLINE 센티널도 별도
+    분기."""
+    if v is DECLINE:
+        return ("decline",)
+    if isinstance(v, dict):
+        if "kind" in v:  # 턴 액션 (legal_actions()의 원소)
+            return ("action", v["kind"], v.get("uid"), v.get("line"),
+                    v.get("faceUp"), v.get("side"))
+        if "who" in v and "order" in v:  # Control 재배치 plan
+            order = v["order"]
+            return ("plan", v["who"], order[1], order[2], order[3])
+        raise ValueError(f"ai_ismcts: unrecognized answer shape: {v!r}")
+    if isinstance(v, list):  # chooseHandCards -- uid 1개짜리 리스트
+        return ("uids",) + tuple(v)
+    return ("scalar", type(v).__name__, v)
+
+
+def _candidates_for(sim, req):
+    """지금 멈춰있는 프롬프트에 대해 분기할 후보 답변 목록을 만든다 (Lua
+    ai_mcts.lua의 candidatesFor() 대응). 분기 불가능한 모양이면 None --
+    호출부가 롤아웃 정책으로 즉답 처리한다.
+
+    "action"은 legal_actions() 전부를 후보로 쓴다(이 프로젝트 전반의
+    관례대로 상위-K 컷 없음, Lua의 policy.actionCandidates 캡과는 다른
+    지점). 나머지 타입은 _NODE_CAND_CAP으로 후보 수를 제한한다 -- 클론
+    재생 비용이 지배적이라 "판 전체 카드 중 아무거나" 같은 프롬프트를
+    무제한 분기할 수는 없다."""
+    t = req["type"]
+    if t == "action":
+        acts = sim.legal_actions(req["chooser"])
+        return acts if acts else None
+    if t == "yesno":
+        out = [True, False]
+    elif t in ("chooseCard", "chooseLine", "chooseOption"):
+        out = list(req.get("candidates") or [])
+        if req.get("optional"):
+            out.append(DECLINE)
+    elif t == "chooseHandCards":
+        # 다중 선택(count != 1)은 조합이 폭발하니 분기 대상에서 제외 --
+        # ai_prior.simDecide 계열 sub-decision sim들도 동일하게 제외.
+        # 주의: `req.get("count") or 1`처럼 Lua의 `req.count or 1` 관용구를
+        # 그대로 옮기면 안 된다 -- Lua는 0이 참(truthy)이라 그 관용구가
+        # 통하지만, 파이썬은 0이 falsy라 명시적 min=0/count=0을 조용히
+        # 기본값으로 덮어써버린다. 반드시 .get(key, default)로 판별한다.
+        if req.get("count", 1) != 1:
+            return None
+        out = [[c.uid] for c in sim.players[req["player"]]["hand"]]
+        if req.get("min", 1) == 0:
+            out.append(DECLINE)
+    elif t == "planRearrange":
+        # cloneAtDecision의 스탠드인이 raise하는 합성 프롬프트(Control
+        # 소비 시 재배치 계획이 아직 저널화 안 된 경우). 후보: 포기 +
+        # 양쪽 플레이어의 모든 단일 라인 스왑 -- ai_prior.plan_rearrange가
+        # 실제로 만드는 것과 같은 모양(전체 순열 중 단일 스왑만).
+        out = [DECLINE]
+        chooser = req["chooser"]
+        for who in (chooser, _other(chooser)):
+            for a in (1, 2):
+                for b in range(a + 1, 4):
+                    order = {1: 1, 2: 2, 3: 3}
+                    order[a], order[b] = b, a
+                    out.append({"who": who, "order": order})
+    else:
+        return None
+    return out if 2 <= len(out) <= _NODE_CAND_CAP else None
+
+
+def _apply_answer(sim, v):
+    sim.answer(None if v is DECLINE else v)
+
+
+def _rollout_answer(sim, req, rollout_policy):
+    """분기하지 않는 프롬프트 하나에 rollout_policy로 답한다. planRearrange는
+    prompt()를 거치지 않는 별도 경로라 decide()가 아니라 전용 시그니처로
+    호출해야 한다 (spend_control의 AI 직접호출)."""
+    if req["type"] == "planRearrange":
+        return rollout_policy.planRearrange(sim, req["chooser"], req.get("compilingLine"))
+    return rollout_policy.decide(sim, req)
 
 
 def _revealed_identity(sim, pi):
@@ -84,10 +174,17 @@ def _node_key(sim, req, pi0):
     정체)는 항상 pi0의 것만 넣는다 -- 상대 쪽은 장수만. 이래야 서로 다른
     결정화(가상의 상대 손패)에서 도달한 같은 정보집합이 하나의 노드로
     올바르게 합쳐진다 (이걸 어기면 상대 차례 노드의 통계가 반복마다
-    쪼개져서 트리 재사용이 무력화된다)."""
+    쪼개져서 트리 재사용이 무력화된다).
+
+    req["type"]/req.get("intent")를 키 앞에 넣는다 -- 액션 전용이던 시절엔
+    "지금 이 보드 상태에서 다음 액션"만 구분하면 됐지만, 하위 결정까지
+    분기하는 지금은 같은 보드 상태에서 서로 다른 질문(예: chooseCard로
+    "지울 카드"를 묻는 것과 "뒤집을 카드"를 묻는 것)이 우연히 겹치면 안
+    되므로 프롬프트 종류 자체를 키의 일부로 명시한다."""
     o = _other(pi0)
     p1, p2 = sim.players[1], sim.players[2]
     return (
+        req["type"], req.get("intent"),
         req["chooser"],
         sim.turn_count, sim.turn, sim.control, sim.phase,
         tuple(p1["protocols"][l] for l in (1, 2, 3)),
@@ -104,46 +201,42 @@ def _node_key(sim, req, pi0):
 
 
 class _Node:
-    """정보집합 하나에 대응하는 트리 노드. N/W/action_of는 '이 노드에서
-    특정 행동을 선택했을 때'의 통계이므로 행동 키(action_key)로 인덱싱된
+    """정보집합 하나에 대응하는 트리 노드. N/W/answer_of는 '이 노드에서
+    특정 답변을 선택했을 때'의 통계이므로 답변 키(_answer_key)로 인덱싱된
     딕셔너리로 이 노드가 직접 들고 있는다 (부모->자식 포인터가 아니라,
     _search()의 전역 nodes 딕셔너리가 키로 어디서든 같은 노드를 찾는다)."""
 
     def __init__(self, chooser):
         self.chooser = chooser      # 이 결정을 내리는 플레이어 (1|2)
-        self.visits = 0             # 이 노드를 지나간 총 횟수 (모든 행동의 N 합)
-        self.N = {}                 # action_key -> 방문 횟수
-        self.W = {}                 # action_key -> 누적 보상 (항상 pi0 시점)
-        self.action_of = {}         # action_key -> 실제 legal_actions() 원소
+        self.visits = 0             # 이 노드를 지나간 총 횟수 (모든 답변의 N 합)
+        self.N = {}                 # answer_key -> 방문 횟수
+        self.W = {}                 # answer_key -> 누적 보상 (항상 pi0 시점)
+        self.answer_of = {}         # answer_key -> 실제 답변 값(action dict/uid list/plan/scalar)
 
 
-def _select_ucb1(node, sim, pi0, c_ucb):
-    """node.chooser 시점에서 지금 이 결정화(sim)에 실제로 합법인 행동들
-    중 하나를 고른다. 아직 한 번도 안 가본 행동이 있으면 그것부터(표준
-    UCT 관례), 다 가봤으면 UCB1 점수가 가장 높은 것을 고른다.
+def _select_ucb1(node, sim, keys, pi0, c_ucb):
+    """node.chooser 시점에서 keys(이 노드에 지금 실제로 유효한 답변 후보
+    키 목록) 중 하나를 고른다. 아직 한 번도 안 가본 후보가 있으면
+    그것부터(표준 UCT 관례), 다 가봤으면 UCB1 점수가 가장 높은 것을
+    고른다.
 
     node.chooser == pi0면 점수가 큰 쪽(나에게 유리한 쪽)을, 아니면 점수가
     작은 쪽(상대에게 유리한 쪽)을 우선한다 -- minimax 부호 규약."""
-    legal_now = sim.legal_actions(node.chooser)
-    if not legal_now:
+    if not keys:
         return None
-    keys_now = [_action_key(a) for a in legal_now]
-
-    untried = [(k, a) for k, a in zip(keys_now, legal_now) if node.N.get(k, 0) == 0]
+    untried = [k for k in keys if node.N.get(k, 0) == 0]
     if untried:
-        # 항상 목록의 첫 항목만 고르면 legal_actions()의 나열 순서(손패
-        # 순서 등)에 따라 탐색이 편향되므로, sim.aux_rng로 무작위로 고른다
-        # (게임 메커니즘 스트림과 무관한, "AI 숙고용" 잡음이라는 계약에
-        # 맞는 용도 -- determinize()가 매 반복 salt로 새로 시드해준다).
+        # 항상 목록의 첫 항목만 고르면 후보 나열 순서(손패 순서 등)에
+        # 따라 탐색이 편향되므로, sim.aux_rng로 무작위로 고른다 (게임
+        # 메커니즘 스트림과 무관한, "AI 숙고용" 잡음이라는 계약에 맞는
+        # 용도 -- determinize()가 매 반복 salt로 새로 시드해준다).
         idx = sim.aux_rng(len(untried)) - 1  # aux_rng는 1..n 관례
-        k, a = untried[idx]
-        node.action_of[k] = a
-        return k
+        return untried[idx]
 
     sign = 1.0 if node.chooser == pi0 else -1.0
     log_total = math.log(node.visits) if node.visits > 0 else 0.0
     best_key, best_score = None, None
-    for k in keys_now:
+    for k in keys:
         n = node.N[k]
         q = sign * node.W[k] / n
         bonus = c_ucb * math.sqrt(log_total / n)
@@ -151,48 +244,6 @@ def _select_ucb1(node, sim, pi0, c_ucb):
         if best_score is None or score > best_score:
             best_score, best_key = score, k
     return best_key
-
-
-def _answer_non_action(sim, rollout_policy):
-    """지금 멈춰있는 (action이 아닌) 하위 결정 하나에 rollout_policy로
-    답한다. planRearrange는 prompt()를 거치지 않는 별도 경로라 decide()가
-    아니라 전용 시그니처로 호출해야 한다 (spend_control의 AI 직접호출)."""
-    req = sim.pending["req"]
-    if req["type"] == "planRearrange":
-        plan = rollout_policy.planRearrange(sim, req["chooser"], req.get("compilingLine"))
-        sim.answer(plan)
-    else:
-        sim.answer(rollout_policy.decide(sim, req))
-
-
-def _advance_to_next_action_node(sim, action, rollout_policy):
-    """action을 적용한 뒤, 다음 'action'형 결정에서 멈추거나 승부가 날
-    때까지 남은 하위 결정을 전부 rollout_policy로 답하며 전진한다.
-    반환: 다음 결정의 req, 또는 None(승부가 났거나 에러)."""
-    sim.answer(action)
-    while sim.pending is not None and not sim.error and not sim.winner:
-        if sim.pending["kind"] == "anim":
-            sim.advance_anim()
-        elif sim.pending["req"]["type"] == "action":
-            return sim.pending["req"]
-        else:
-            _answer_non_action(sim, rollout_policy)
-    return None
-
-
-def _rollout_to_horizon(sim, rollout_policy, horizon_turn):
-    """트리 밖 -- 남은 결정을 전부 rollout_policy로 답하며, horizon_turn에
-    도달하거나 승부가 날 때까지 진행한다. 'action'형 결정도 다른 결정과
-    똑같이 rollout_policy.decide()로 답한다 (더 이상 트리를 짓지 않으므로
-    action/비-action을 구분할 필요가 없다)."""
-    guard = 0
-    while (sim.pending is not None and not sim.error and not sim.winner
-           and guard < _ROLLOUT_GUARD and sim.turn_count < horizon_turn):
-        guard += 1
-        if sim.pending["kind"] == "anim":
-            sim.advance_anim()
-        else:
-            _answer_non_action(sim, rollout_policy)
 
 
 def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
@@ -208,6 +259,70 @@ def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
     return math.tanh(score / eval_scale)
 
 
+def _run_iteration(g, pi0, nodes, rollout_policy, c_ucb, horizon_turn,
+                    eval_fn, eval_w, eval_scale, salt):
+    """ISMCTS 반복 한 번: select(트리를 따라 UCB로 내려가다가 처음 보는
+    정보집합에서 expand) -> rollout(그 뒤로는 rollout_policy가 흘려보냄)을
+    한 방 루프로 수행한다 (Lua ai_mcts.lua M.pick()의 반복 본문과 동일한
+    구조 -- Lua는 `inTree` 플래그로 "아직 트리 안"과 "확장 후 롤아웃"을
+    가르는데, 여기서도 `in_tree` 변수가 똑같은 역할을 한다).
+
+    분기 대상: "action" 타입은 항상, 그 외 타입은 req["chooser"] == pi0일
+    때만(내 하위 결정만 -- 상대의 카드 선택/라인 선택 등은 상대의 정보라
+    분기하지 않고 롤아웃 정책이 대신 답한다, Lua의 기본 동작과 동일).
+
+    반환: (path, value) -- path는 역전파용 [(node, key), ...],
+    value는 이 반복의 보상(pi0 시점, _reward()가 승부 확정/미확정 양쪽을
+    다 처리). 클론 자체가 불가능하면 (None, None)."""
+    sim = g.clone_at_decision()
+    if sim is None:
+        return None, None
+    try:
+        determinize(sim, pi0, salt=salt)
+        path = []
+        in_tree = True
+        guard = 0
+        while guard < _ROLLOUT_GUARD:
+            guard += 1
+            if sim.error or sim.winner is not None or sim.pending is None:
+                break
+            if sim.pending["kind"] == "anim":
+                sim.advance_anim()
+                continue
+            req = sim.pending["req"]
+            if sim.turn_count >= horizon_turn:
+                break
+
+            cands = None
+            if in_tree and (req["type"] == "action" or req["chooser"] == pi0):
+                cands = _candidates_for(sim, req)
+
+            if cands is not None:
+                key = _node_key(sim, req, pi0)
+                is_new = key not in nodes
+                if is_new:
+                    nodes[key] = _Node(chooser=req["chooser"])
+                node = nodes[key]
+                node.visits += 1
+                keys = []
+                for v in cands:
+                    k = _answer_key(v)
+                    node.answer_of.setdefault(k, v)
+                    keys.append(k)
+                chosen_key = _select_ucb1(node, sim, keys, pi0, c_ucb)
+                chosen_val = node.answer_of[chosen_key]
+                path.append((node, chosen_key))
+                _apply_answer(sim, chosen_val)
+                if is_new:
+                    in_tree = False  # 확장 완료 -- 이후로는 전부 롤아웃
+            else:
+                sim.answer(_rollout_answer(sim, req, rollout_policy))
+
+        return path, _reward(sim, pi0, eval_fn, eval_w, eval_scale)
+    finally:
+        sim.dispose()  # 반드시 호출 -- 안 그러면 블로킹된 스레드가 쌓인다
+
+
 def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
             rollout_turn_cap, eval_fn, eval_w, eval_scale):
     """ISMCTS 본체. 성공하면 legal_actions(pi0)의 원소 하나를 반환하고,
@@ -217,61 +332,30 @@ def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
         return None
     root_key = _node_key(g, root_req, pi0)
     nodes = {root_key: _Node(chooser=pi0)}
+    horizon_turn = g.turn_count + rollout_turn_cap
 
     for i in range(iterations):
-        sim = g.clone_at_decision()
-        if sim is None:
-            return None
-        try:
-            determinize(sim, pi0, salt=i)
-            horizon_turn = sim.turn_count + rollout_turn_cap
-            path = []
-            node = nodes[root_key]
-            depth = 0
-
-            # --- Selection (+ Expansion) ---
-            while depth < _MAX_SELECTION_DEPTH and sim.turn_count < horizon_turn:
-                depth += 1
-                node.visits += 1
-                k = _select_ucb1(node, sim, pi0, c_ucb)
-                if k is None:
-                    break
-                path.append((node, k))
-                action = node.action_of[k]
-                req = _advance_to_next_action_node(sim, action, rollout_policy)
-                if req is None:
-                    break
-                key = _node_key(sim, req, pi0)
-                is_new = key not in nodes
-                if is_new:
-                    nodes[key] = _Node(chooser=req["chooser"])
-                node = nodes[key]
-                if is_new:
-                    break  # 새 노드까지 확장 완료 -- 이후로는 롤아웃
-
-            # --- Simulation (rollout) ---
-            _rollout_to_horizon(sim, rollout_policy, horizon_turn)
-
-            # --- Reward & Backpropagation ---
-            z = _reward(sim, pi0, eval_fn, eval_w, eval_scale)
-            for n, k in reversed(path):
-                n.N[k] = n.N.get(k, 0) + 1
-                n.W[k] = n.W.get(k, 0.0) + z
-        finally:
-            sim.dispose()  # 반드시 호출 -- 안 그러면 블로킹된 스레드가 쌓인다
+        path, value = _run_iteration(g, pi0, nodes, rollout_policy, c_ucb,
+                                      horizon_turn, eval_fn, eval_w, eval_scale, salt=i)
+        if path is None:
+            return None  # 클론 불가(시드 없음 등) -- 호출자가 휴리스틱으로 폴백
+        for n, k in reversed(path):
+            n.N[k] = n.N.get(k, 0) + 1
+            n.W[k] = n.W.get(k, 0.0) + value
 
     root = nodes[root_key]
     if not root.N:
         return None
     best_key = max(root.N, key=lambda k: root.N[k])
-    return root.action_of[best_key]
+    return root.answer_of[best_key]
 
 
 class ISMCTSAI(HeuristicAI):
-    """ISMCTS로 'action'(카드 플레이/리프레시) 결정을 고르는 AI. 그 외
-    하위 결정과 Control 재배치(planRearrange)는 HeuristicAI(ai_prior의
-    태그 채점)를 그대로 상속해서 답한다 -- HeuristicAI가 RandomAI를
-    상속해 하위 결정을 무작위로 답하는 것과 동일한 계층 구조다.
+    """ISMCTS로 'action'(카드 플레이/리프레시) 결정과, 그 액션이 여는 내
+    하위 결정(chooseCard/chooseLine/chooseOption/chooseHandCards/
+    planRearrange/yesno)까지 같은 트리에서 고르는 AI. 상대의 하위 결정과,
+    분기하기엔 후보가 너무 많거나 모양이 안 맞는 프롬프트는 여전히
+    HeuristicAI(ai_prior의 태그 채점)가 즉답한다.
 
     시뮬레이션이 불가능하면(Engine에 seed가 없는 등, clone_at_decision()이
     None을 반환하는 모든 경우) 자동으로 HeuristicAI의 채점으로 폴백한다.
@@ -281,13 +365,18 @@ class ISMCTSAI(HeuristicAI):
     87.5%)이면서 판당 약 4배 저렴함을 실측으로 확인했다(24->12 변경
     근거). 이어서 4로 낮춘 뒤 HeuristicAI 상대 8쌍(16판)으로 검증했더니
     13승/3패(81.2% ±17.9, 유의미하게 우세)로 승률 손실이 없었다(4는
-    그 자체로도 §5.8 실측 범위 밖이었지만 사후 검증됨). 
+    그 자체로도 §5.8 실측 범위 밖이었지만 사후 검증됨).
     아레나로도 검증했다(HeuristicAI 상대 8쌍, 16판):
     12승/4패(75.0% ±26.2, 표본이 작아 통계적으로는 아직 무의미하나
     승 쪽 숫자는 유지) -- 속도는 판당 19.8초로 지금까지 측정한 값 중
     가장 빠르다(4는 38.4초, 12는 28.8초). 승률이 표본을 늘려도 유지
     되는지는 아직 확정 전이니 신뢰도는 중간 정도로 볼 것.
-    """
+
+    2026-08-03: 하위 결정 분기를 추가한 뒤 이 튜닝(rollout_turn_cap 등)이
+    여전히 최선인지는 재검증하지 않았다 -- 트리가 커진 만큼 반복 예산
+    (iterations) 대비 노드당 통계가 희석될 수 있어(Lua의 oppInTree가
+    같은 이유로 꺼져 있는 것과 동일한 리스크), 병합 전 arena 재측정
+    필요."""
 
     def __init__(self, iterations=200, c_ucb=1.41, rollout_policy=None,
                  rollout_turn_cap=2, eval_fn=evaluate, eval_w=None,
@@ -319,5 +408,8 @@ class ISMCTSAI(HeuristicAI):
         return super().decide(g, req)
 
     # planRearrange(g, pi, compiling_line)는 HeuristicAI(ai_prior.plan_rearrange)
-    # 구현을 그대로 상속한다 -- ai_ismcts_plan.md 1.2절: Control 재배치의
-    # 탐색 기반 최적화는 v1 범위 밖.
+    # 구현을 그대로 상속한다 -- spend_control이 프롬프트를 거치지 않고
+    # 직접 호출하는 별도 경로라, 하위 결정 트리 편입(2026-08-03)의 범위
+    # 밖이다. cloneAtDecision의 planRearrange 스탠드인(합성 프롬프트)만
+    # 트리에서 다뤄지고, 실제 라이브 매치의 이 호출 경로 자체는 여전히
+    # 휴리스틱이다.

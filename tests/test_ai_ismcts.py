@@ -22,10 +22,13 @@ import random
 import threading
 
 from src.game.engine import Engine
-from src.game.ai_ismcts import ISMCTSAI, _Node, _select_ucb1, _action_key, _node_key, _reward
+from src.game.ai_ismcts import (
+    ISMCTSAI, _Node, _select_ucb1, _answer_key, _node_key, _reward,
+    _candidates_for, _run_iteration,
+)
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_random import RandomAI
-from src.game.ai_sim import evaluate
+from src.game.ai_sim import evaluate, DECLINE
 
 PROTOS1 = ["Water", "Fire", "Life"]
 PROTOS2 = ["Ice", "Metal", "Death"]
@@ -129,40 +132,36 @@ def test_decide_falls_back_to_heuristic_when_no_seed():
 # ---------------------------------------------------------------------------
 
 class _StubSim:
-    """_select_ucb1이 필요로 하는 최소 인터페이스(legal_actions, aux_rng)만
-    흉내내는 가짜 sim -- 실제 Engine/스레드 없이 UCB1 수식 자체만 검증."""
-
-    def __init__(self, actions):
-        self._actions = actions
-
-    def legal_actions(self, pi):
-        return self._actions
+    """_select_ucb1이 필요로 하는 최소 인터페이스(aux_rng)만 흉내내는 가짜
+    sim -- 실제 Engine/스레드 없이 UCB1 수식 자체만 검증. 2026-08-03
+    개편으로 _select_ucb1이 후보 키 목록을 외부에서 받게 되면서
+    legal_actions()는 더 이상 필요 없어졌다."""
 
     def aux_rng(self, n):
-        return 1  # 이 테스트의 액션은 전부 이미 방문된 상태라 실제로는 안 쓰임
+        return 1  # 이 테스트의 후보는 전부 이미 방문된 상태라 실제로는 안 쓰임
 
 
 def _two_actions_with_stats(chooser, pi0):
     actions = [{"kind": "play", "uid": 1, "line": 1, "faceUp": True},
                {"kind": "play", "uid": 2, "line": 1, "faceUp": True}]
-    good_key, bad_key = _action_key(actions[0]), _action_key(actions[1])
+    good_key, bad_key = _answer_key(actions[0]), _answer_key(actions[1])
     node = _Node(chooser=chooser)
     node.visits = 20
     node.N = {good_key: 10, bad_key: 10}
     node.W = {good_key: 8.0, bad_key: -8.0}  # 항상 pi0 시점 값 (설계상 불변)
-    node.action_of = {good_key: actions[0], bad_key: actions[1]}
+    node.answer_of = {good_key: actions[0], bad_key: actions[1]}
     return node, actions, good_key, bad_key
 
 
 def test_select_ucb1_prefers_pi0_favorable_action_at_own_node():
     node, actions, good_key, bad_key = _two_actions_with_stats(chooser=1, pi0=1)
-    picked = _select_ucb1(node, _StubSim(actions), pi0=1, c_ucb=1.41)
+    picked = _select_ucb1(node, _StubSim(), [good_key, bad_key], pi0=1, c_ucb=1.41)
     assert picked == good_key
 
 
 def test_select_ucb1_prefers_pi0_unfavorable_action_at_opponent_node():
     node, actions, good_key, bad_key = _two_actions_with_stats(chooser=2, pi0=1)
-    picked = _select_ucb1(node, _StubSim(actions), pi0=1, c_ucb=1.41)
+    picked = _select_ucb1(node, _StubSim(), [good_key, bad_key], pi0=1, c_ucb=1.41)
     assert picked == bad_key
 
 
@@ -171,16 +170,18 @@ def test_select_ucb1_expands_untried_actions_before_using_ucb_score():
     골라야 한다(표준 UCT 관례)."""
     actions = [{"kind": "play", "uid": 1, "line": 1, "faceUp": True},
                {"kind": "play", "uid": 2, "line": 1, "faceUp": True}]
-    tried_key, untried_key = _action_key(actions[0]), _action_key(actions[1])
+    tried_key, untried_key = _answer_key(actions[0]), _answer_key(actions[1])
     node = _Node(chooser=1)
     node.visits = 5
     node.N = {tried_key: 5}  # untried_key는 아직 등록 안 됨(N.get 기본값 0)
     node.W = {tried_key: 100.0}  # 압도적으로 좋아 보여도
-    node.action_of = {tried_key: actions[0]}
+    node.answer_of = {tried_key: actions[0]}
 
-    picked = _select_ucb1(node, _StubSim(actions), pi0=1, c_ucb=1.41)
+    picked = _select_ucb1(node, _StubSim(), [tried_key, untried_key], pi0=1, c_ucb=1.41)
     assert picked == untried_key
-    assert node.action_of[untried_key] == actions[1]
+    # untried_key는 answer_of에 아직 없다 -- _run_iteration이 매핑을
+    # 채워주는 계약이라, _select_ucb1 단독 호출로는 값이 안 생긴다.
+    assert untried_key not in node.answer_of
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +197,7 @@ def test_node_key_ignores_opponent_hand_identity():
     e1.players[2]["hand"] = [e1.new_card("Ice", v, 2) for v in (1, 2, 3)]
     e2.players[2]["hand"] = [e2.new_card("Metal", v, 2) for v in (0, 1, 2)]  # 다른 정체, 같은 장수
 
-    req = {"chooser": 2}  # 상대 차례 노드인 상황을 흉내
+    req = {"type": "action", "chooser": 2}  # 상대 차례 노드인 상황을 흉내
     assert _node_key(e1, req, pi0=1) == _node_key(e2, req, pi0=1)
 
 
@@ -210,8 +211,27 @@ def test_node_key_distinguishes_pi0_own_hand():
     e1.players[2]["hand"] = []
     e2.players[2]["hand"] = []
 
-    req = {"chooser": 1}
+    req = {"type": "action", "chooser": 1}
     assert _node_key(e1, req, pi0=1) != _node_key(e2, req, pi0=1)
+
+
+def test_node_key_distinguishes_prompt_type_at_the_same_board_state():
+    """같은 보드 상태라도 프롬프트 종류(예: chooseCard vs chooseLine)가
+    다르면 다른 노드여야 한다 -- 하위 결정 분기(2026-08-03)를 추가하며
+    새로 생긴 충돌 위험. req["type"]을 키에 넣어 방지한다."""
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    req_a = {"type": "chooseCard", "chooser": 1, "intent": "delete"}
+    req_b = {"type": "chooseLine", "chooser": 1, "intent": "delete"}
+    assert _node_key(e, req_a, pi0=1) != _node_key(e, req_b, pi0=1)
+
+
+def test_node_key_distinguishes_intent_for_the_same_prompt_type():
+    """같은 chooseCard라도 intent(지울지/뒤집을지)가 다르면 다른 질문이라
+    다른 노드여야 한다."""
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    req_a = {"type": "chooseCard", "chooser": 1, "intent": "delete"}
+    req_b = {"type": "chooseCard", "chooser": 1, "intent": "flip"}
+    assert _node_key(e, req_a, pi0=1) != _node_key(e, req_b, pi0=1)
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +300,122 @@ def test_control_rearrange_path_does_not_crash():
         HeuristicAI.planRearrange = orig
 
     assert calls["n"] > 0, "Control 재배치 경로가 한 번도 발동하지 않아 이 테스트가 그 경로를 검증하지 못함"
+
+
+# ---------------------------------------------------------------------------
+# 9. _candidates_for -- 하위 결정 분기 후보 생성 (Lua ai_mcts.lua의
+#    candidatesFor() 대응, 2026-08-03 개편으로 신설)
+# ---------------------------------------------------------------------------
+
+def test_candidates_for_yesno_is_always_true_false():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    assert _candidates_for(e, {"type": "yesno", "chooser": 1}) == [True, False]
+
+
+def test_candidates_for_choose_card_includes_decline_when_optional():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    req = {"type": "chooseCard", "chooser": 1, "candidates": ["u1", "u2"], "optional": True}
+    assert _candidates_for(e, req) == ["u1", "u2", DECLINE]
+
+
+def test_candidates_for_choose_card_returns_none_when_too_few_or_too_many():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    assert _candidates_for(e, {"type": "chooseCard", "chooser": 1, "candidates": ["u1"]}) is None
+    many = {"type": "chooseCard", "chooser": 1, "candidates": [f"u{i}" for i in range(20)]}
+    assert _candidates_for(e, many) is None
+
+
+def test_candidates_for_choose_hand_cards_only_when_single_pick():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    e.players[1]["hand"] = [e.new_card("Water", v, 1) for v in (0, 1, 2)]
+    req = {"type": "chooseHandCards", "chooser": 1, "player": 1, "count": 1, "min": 1}
+    out = _candidates_for(e, req)
+    assert len(out) == 3
+    assert all(isinstance(v, list) and len(v) == 1 for v in out)
+
+    multi = {"type": "chooseHandCards", "chooser": 1, "player": 1, "count": 2, "min": 2}
+    assert _candidates_for(e, multi) is None
+
+
+def test_candidates_for_choose_hand_cards_adds_decline_when_optional():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    e.players[1]["hand"] = [e.new_card("Water", 0, 1)]
+    req = {"type": "chooseHandCards", "chooser": 1, "player": 1, "count": 1, "min": 0}
+    assert DECLINE in _candidates_for(e, req)
+
+
+def test_candidates_for_plan_rearrange_enumerates_every_single_swap_both_sides():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    req = {"type": "planRearrange", "chooser": 1}
+    out = _candidates_for(e, req)
+    assert DECLINE in out
+    plans = [v for v in out if v is not DECLINE]
+    # 라인 3개 중 2개를 고르는 스왑 = 3가지, 양쪽 플레이어 = 6개
+    assert len(plans) == 6
+    assert {p["who"] for p in plans} == {1, 2}
+    for p in plans:
+        assert sorted(p["order"].values()) == [1, 2, 3]
+        assert p["order"] != {1: 1, 2: 2, 3: 3}  # 항상 실제 스왑(항등이 아님)
+
+
+def test_candidates_for_unbranchable_types_return_none():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    assert _candidates_for(e, {"type": "confirmRefresh", "chooser": 1}) is None
+    assert _candidates_for(e, {"type": "rearrange", "chooser": 1}) is None
+
+
+# ---------------------------------------------------------------------------
+# 10. _answer_key -- 분기 답변 종류별 키 (Lua ai_mcts.lua의 keyOf() 대응)
+# ---------------------------------------------------------------------------
+
+def test_answer_key_distinguishes_every_shape():
+    action = {"kind": "play", "uid": 1, "line": 2, "faceUp": True}
+    plan = {"who": 1, "order": {1: 2, 2: 1, 3: 3}}
+    uids = ["u1"]
+    keys = [
+        _answer_key(DECLINE),
+        _answer_key(action),
+        _answer_key(plan),
+        _answer_key(uids),
+        _answer_key(True),
+        _answer_key(False),
+        _answer_key(2),
+        _answer_key("draw"),
+    ]
+    assert len(set(keys)) == len(keys)  # 전부 서로 달라야 함
+
+
+def test_answer_key_is_stable_for_equal_values():
+    a1 = {"kind": "play", "uid": 5, "line": 1, "faceUp": False}
+    a2 = {"kind": "play", "uid": 5, "line": 1, "faceUp": False}
+    assert _answer_key(a1) == _answer_key(a2)
+
+
+# ---------------------------------------------------------------------------
+# 11. 하위 결정 분기가 실제로 트리에 반영되는지 -- 2026-08-03 개편의 핵심
+#     회귀. 배관만 있고 실제 대국에서 한 번도 안 타면 의미가 없으므로,
+#     실제 게임을 굴리면서 action 이외 타입에서 _candidates_for가
+#     non-None을 반환한 적이 있는지 계측한다.
+# ---------------------------------------------------------------------------
+
+def test_sub_decision_branching_is_actually_exercised_during_real_play():
+    import src.game.ai_ismcts as ai_ismcts_module
+    branched_types = set()
+    orig = ai_ismcts_module._candidates_for
+
+    def spying(sim, req):
+        out = orig(sim, req)
+        if out is not None and req["type"] != "action":
+            branched_types.add(req["type"])
+        return out
+
+    ai_ismcts_module._candidates_for = spying
+    try:
+        for seed in range(6):
+            ai = ISMCTSAI(iterations=15, rollout_turn_cap=6)
+            e = _driven_engine(seed, {1: ai, 2: HeuristicAI()})
+            assert e.error is None
+    finally:
+        ai_ismcts_module._candidates_for = orig
+
+    assert branched_types, "6판 동안 action 이외의 하위 결정이 한 번도 분기되지 않음"
