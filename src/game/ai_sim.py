@@ -13,6 +13,7 @@ import numpy as np
 
 from src.game.rules import COMPILE_THRESHOLD
 from src.game.ai_features import extract, expand_features
+from src.game.ai_prior import compile_available_next_check
 
 
 def _other(pi):
@@ -117,6 +118,13 @@ def evaluate(g, pi, w=None):
         return -1e6
     o = _other(pi)
     s = 0.0
+    # Lust_0류 동적 봉쇄(compile_available_next_check)를 먼저 확인 --
+    # 임계값을 넘겨 우세해도 다음 자기 턴 시작에 실제로 컴파일을 못 하는
+    # 상태라면 "곧 완성"(w["ready"]/w["opp_ready"])이 아니라 그냥 평범한
+    # 라인 우세(w["lead"])로만 평가해야 한다 (ai_prior._line_threat와
+    # 동일한 원칙).
+    my_compile_available = compile_available_next_check(g, pi)
+    opp_compile_available = compile_available_next_check(g, o)
     for line in (1, 2, 3):
         if g.players[pi]["compiled"][line]:
             s += w["compiled"]
@@ -126,12 +134,12 @@ def evaluate(g, pi, w=None):
         mv, ov = g.line_value(pi, line), g.line_value(o, line)
         s += (mv - ov) * w["line_diff"]
         if not g.players[pi]["compiled"][line]:
-            if mv >= COMPILE_THRESHOLD and mv > ov:
+            if my_compile_available and mv >= COMPILE_THRESHOLD and mv > ov:
                 s += w["ready"]
             elif mv > ov:
                 s += w["lead"]
         if not g.players[o]["compiled"][line]:
-            if ov >= COMPILE_THRESHOLD and ov > mv:
+            if opp_compile_available and ov >= COMPILE_THRESHOLD and ov > mv:
                 s -= w["opp_ready"]
             elif ov >= COMPILE_THRESHOLD - 2 and ov > mv:
                 s -= w["opp_brew"]

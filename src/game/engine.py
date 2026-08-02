@@ -1141,18 +1141,28 @@ class Engine:
         e["landing"] = True
         card, d = e["card"], e["dest"]
         if d["zone"] == "field":
-            idx = None
-            if d.get("underCard"):
+            anchor = d.get("underCard")
+            aidx = None
+            if anchor is not None:
                 st = self.players[d["pi"]]["stacks"][d["line"]]
                 for i, x in enumerate(st):
-                    if x is d["underCard"]:
-                        idx = i
+                    if x is anchor:
+                        aidx = i
                         break
-            if idx is not None:
-                # 밑으로 슬라이드해 들어가는 경우는 새로 덮는 게 아니라 커버 트리거 없음.
+            if aidx is not None and aidx == len(st) - 1:
+                # 앵커가 지금 이 스택의 맨 위(드러난 카드)라면, 새 카드가 그
+                # 위에 정상적으로 놓여 앵커를 덮는 것과 완전히 같다 --
+                # place_on_stack으로 커버 트리거까지 그대로 처리한다.
+                # ("이 카드 밑에 낸다"는 카드 텍스트의 표현이지만, 실제
+                # 효과는 "이 카드 다음에 낸 카드처럼" 그 위를 덮는다는
+                # 뜻이다 -- Rigid_3/Nova_0 실전 버그 리포트로 확인.)
+                self.place_on_stack(card, d["pi"], d["line"], d["faceUp"])
+            elif aidx is not None:
+                # 앵커가 이미 다른 카드에 덮여 있으면, 그 앵커 바로 위 자리에
+                # 끼워 넣는다(앵커를 덮은 카드보다는 밑, 앵커보다는 위).
                 card.owner = card.owner or d["pi"]
                 card.face_up = d["faceUp"]
-                self.players[d["pi"]]["stacks"][d["line"]].insert(idx, card)
+                st.insert(aidx + 1, card)
             else:
                 self.place_on_stack(card, d["pi"], d["line"], d["faceUp"])
         elif d["zone"] == "trash":
@@ -1312,9 +1322,11 @@ class Engine:
         return True
 
     def play_card(self, pi, uid, line, face_up, side_pi=None, under_card=None, used_action=False):
-        """손 카드(uid)를 line에 낸다. under_card를 주면 그 카드 바로 밑으로
-        슬라이드해 들어간다(새로 덮는 게 아니므로 커버 트리거 없음 -- Rigid_3
-        "이 카드 바로 밑에 낸다")."""
+        """손 카드(uid)를 line에 낸다. under_card를 주면 "그 카드 밑에 낸다"는
+        카드 텍스트 표현대로 처리한다 -- 실제 효과는 그 카드를 정상적으로
+        덮는 것(카드 텍스트가 "다음에 낸 카드처럼"을 "밑에"로 표현한 것,
+        Rigid_3/Nova_0 실전 버그 리포트로 확인). 앵커가 지금 맨 위(드러난
+        카드)면 커버 트리거까지 정상 발동."""
         card = self.take_from_hand(pi, uid)
         if not card:
             return False

@@ -77,7 +77,11 @@ def test_can_move_does_not_affect_ordinary_cards(engine):
 
 def test_nova_0_finish_plays_deck_top_under_opponent_nova(dealt_engine):
     """Nova_0 종료: 내 덱 맨 위 카드를 상대 스택의 드러난 Nova 카드 밑에
-    뒷면으로 낸다 -- side(상대)와 pi(내 덱 소유자)가 달라야 한다."""
+    뒷면으로 낸다 -- side(상대)와 pi(내 덱 소유자)가 달라야 한다.
+
+    "밑에 낸다"는 카드 텍스트 표현이지만 실제 효과는 그 Nova 카드를
+    정상적으로 덮는 것이다(다음에 낸 카드처럼 위에 놓임) -- 실전 버그
+    리포트로 확인, engine.py의 play_card/perform_landing 참고."""
     e = dealt_engine
     nova0 = neutral_card(e, "Nova", 0, 1)
     nova0.definition = get("Nova", 0)
@@ -92,13 +96,15 @@ def test_nova_0_finish_plays_deck_top_under_opponent_nova(dealt_engine):
     nova0.definition["finish"](e, nova0)
 
     assert len(e.players[1]["deck"]) == deck_before - 1
-    # 새 카드가 상대(2) 스택의 그 Nova 카드 바로 밑에 들어갔는지 확인.
+    # 새 카드가 상대(2) 스택에서 그 Nova 카드를 덮었는지(바로 위에 놓였는지) 확인.
     stack = e.players[2]["stacks"][2]
     idx = stack.index(opp_nova)
-    assert idx > 0
-    placed = stack[idx - 1]
+    assert idx < len(stack) - 1
+    placed = stack[idx + 1]
     assert placed.owner == 1  # 소유자는 여전히 나(내 덱에서 온 카드)
     assert placed.face_up is False
+    assert stack[-1] is placed  # 새 카드가 이제 맨 위(드러난 카드) -- Nova 카드는 덮임
+    assert not e.is_uncovered(opp_nova)
 
 
 def test_lust_0_line_value_both_adds_to_each_side(engine):
@@ -186,7 +192,10 @@ def test_inert_1_suppresses_other_start_end_triggers_in_line(engine):
     assert e.phase_trigger_resolvable(entry) is True
 
 
-def test_rigid_3_plays_hand_card_directly_under_self_without_cover(dealt_engine):
+def test_rigid_3_plays_hand_card_that_covers_self(dealt_engine):
+    """실전 버그 리포트: "이 카드 밑에 낸다"는 카드 텍스트 표현이지만,
+    실제 효과는 "이 카드 다음에 낸 카드처럼" 그 위를 덮는 것이다 --
+    Rigid_3 자신이 가려져야 한다(반대로 구현돼 있던 걸 수정)."""
     e = dealt_engine
     rigid3 = neutral_card(e, "Rigid", 3, 1)
     rigid3.definition = get("Rigid", 3)
@@ -201,8 +210,28 @@ def test_rigid_3_plays_hand_card_directly_under_self_without_cover(dealt_engine)
     assert len(stack) == len(stack_before) + 1
     idx_new = stack.index(hand_card)
     idx_rigid = stack.index(rigid3)
-    assert idx_new == idx_rigid - 1  # rigid3 바로 밑에 슬라이드해 들어감
-    assert stack[-1] is rigid3  # rigid3은 여전히 맨 위(안 덮임)
+    assert idx_new == idx_rigid + 1  # rigid3 바로 위에 놓여 rigid3을 덮음
+    assert stack[-1] is hand_card  # 새 카드가 맨 위(드러난 카드)
+    assert not e.is_uncovered(rigid3)  # rigid3은 이제 가려짐
+
+
+def test_under_card_fires_a_real_cover_trigger_when_anchor_is_on_top(dealt_engine):
+    """앵커가 지금 스택 맨 위(드러난 카드)일 때는 정상적으로 덮이는 것과
+    완전히 같아야 한다 -- Rigid_4("이 카드가 뒷면 카드에 의해 가려지려 할
+    때: 그 전에, 카드를 1장 뽑습니다")의 onCovered가 실제로 발동하는지로
+    확인. 예전 구현은 "밑으로 슬라이드"로 취급해 커버 트리거를 일부러
+    건너뛰었었다."""
+    e = dealt_engine
+    rigid4 = neutral_card(e, "Rigid", 4, 1)
+    rigid4.definition = get("Rigid", 4)
+    rigid4.face_up = True
+    e.players[1]["stacks"][1].append(rigid4)
+    hand_card = e.players[1]["hand"][0]
+
+    deck_before = len(e.players[1]["deck"])
+    ok = e.play_card(1, hand_card.uid, 1, False, under_card=rigid4)
+    assert ok
+    assert len(e.players[1]["deck"]) == deck_before - 1  # onCovered가 발동해 1장 뽑음
 
 
 def test_swap_protocols_fires_after_rearrange_reactive(dealt_engine):

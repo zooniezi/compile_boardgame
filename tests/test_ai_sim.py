@@ -9,8 +9,16 @@ import pytest
 
 from src.game.engine import Engine
 from src.game.ai_random import RandomAI
-from src.game.ai_sim import determinize, evaluate, pick_best, evaluate_learned, load_eval_weights
+from src.game.ai_sim import (
+    determinize, evaluate, pick_best, evaluate_learned, load_eval_weights, DEFAULT_WEIGHTS,
+)
 from src.game.ai_features import extract, expand_features, feature_count
+
+
+def _card(g, proto, value, owner, face_up=True):
+    c = g.new_card(proto, value, owner)
+    c.face_up = face_up
+    return c
 
 
 def _driven_engine(seed, ai, steps=500):
@@ -94,6 +102,29 @@ def test_evaluate_favors_winner_and_compiled_protocols():
 
     e.players[1]["compiled"][1] = True
     assert evaluate(e, 1) > baseline
+
+
+def test_evaluate_ready_bonus_suppressed_when_lust_locked():
+    """임계값을 넘겨 우세해도 Lust_0류 동적 봉쇄(상대가 Control을 쥐고
+    blockOpponentCompileWithControl 카드를 드러내 놓음) 상태면, 다음 턴에
+    실제로 컴파일할 수 없으니 "곧 컴파일"(ready) 대신 그냥 라인
+    우세(lead)로만 평가해야 한다 -- ai_prior.compile_available_next_check와
+    동일한 규칙."""
+    def build(locked):
+        protos2 = ["Lust", "Metal", "Death"] if locked else ["Metal", "Water", "Death"]
+        e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=protos2)
+        e.control = 2  # 봉쇄 없는 쪽도 control 항이 동일하게 상쇄되도록 통일
+        if locked:
+            e.players[2]["stacks"][1].append(_card(e, "Lust", 0, 2))
+        e.players[1]["stacks"][2].append(_card(e, "Fire", 5, 1))
+        e.players[1]["stacks"][2].append(_card(e, "Water", 5, 1))
+        return e
+
+    e_locked = build(True)
+    e_free = build(False)
+    assert e_locked.line_value(1, 2) >= 10 and e_free.line_value(1, 2) >= 10
+    diff = evaluate(e_free, 1) - evaluate(e_locked, 1)
+    assert diff == pytest.approx(DEFAULT_WEIGHTS["ready"] - DEFAULT_WEIGHTS["lead"])
 
 
 def test_pick_best_returns_a_legal_action_from_within_ai_decide():

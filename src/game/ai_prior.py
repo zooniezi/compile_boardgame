@@ -12,8 +12,624 @@ TAGS는 카드 텍스트가 아니라 carddefs.py의 실제 구현과 대조해�
 """
 
 from src.game.rules import COMPILE_THRESHOLD
+from src.game.carddefs import _distinct_protos_in_play
 
 TAGS = {}
+
+
+def _other(pi):
+    return 2 if pi == 1 else 1
+
+
+# ---------------------------------------------------------------------------
+# Bespoke 프라이서 -- 일반화된 verb(del/ret/flip/draw/...)로 못 잡는, 판
+# 상황을 직접 읽어야 하는 카드 전용 채점(TAGS의 "fn" 필드로 연결). 각
+# 함수는 (g, pi, card, line, handAfter) -> 점수 계약을 따른다. 아래 TAGS
+# 카탈로그가 이 이름들을 값으로 직접 참조하므로(문자열이 아니라 함수
+# 객체), 그 대입문보다 먼저 정의돼 있어야 한다 -- 그래서 파일 맨 위,
+# 카탈로그 시작 전에 둔다(본문 안의 이름 조회는 늦게 묶이므로 _line_threat
+# 등 아래쪽에 정의된 다른 헬퍼를 참조해도 무방하지만, TAGS 딕셔너리 리터럴
+# 자체는 대입 시점에 즉시 평가된다).
+#
+# 순서상 여기 채워진 카드는 "Control/컴파일에 직결되는 강력한 카드부터"라는
+# 로드맵 우선순위(260803_ai_lua_vs_python_analysis.md §7 1단계)를 따른다.
+# 아직 여기 없는 카드(Pride_0, Fulcrum_1, Nova_3, Momentum_4 등)는 전부
+# "다른 카드를 라인 사이에서 옮기는" 효과라 일반화된 shift/move verb
+# 프라이서(Lua의 shiftPrior/shiftCardValue/bestShiftWhere에 대응하는
+# 인프라)가 아직 없어서 그 인프라부터 먼저 갖춘 뒤로 미뤘다.
+# ---------------------------------------------------------------------------
+
+def _control_gain_value(g, pi):
+    """지금 Control을 얻는 게 얼마나 가치 있는가. 이미 내가 쥐고 있으면
+    무의미(0); 상대가 쥐고 있던 걸 빼앗아 오는 쪽이(그들의 Lust_0류 잠금이
+    풀리는 효과까지 포함) 아무도 안 쥔 상태에서 얻는 것보다 더 크다."""
+    if g.control == pi:
+        return 0.0
+    return 2.5 if g.control == _other(pi) else 1.2
+
+
+def _lust_0(g, pi, card, line, hand_after):
+    """Lust_0: play가 곧바로 gain_control(소유자)을 호출한다(carddefs.py).
+    Control을 얻는 가치 자체 + (얻은 Control로 blockOpponentCompileWithControl
+    이 실제로 발동해) 상대가 지금 이미 임계값 이상으로 우세한 라인마다
+    그 컴파일을 막아내는 값(라인당 imminentCompile 스케일)을 더한다."""
+    value = _control_gain_value(g, pi)
+    o = _other(pi)
+    for l in (1, 2, 3):
+        if (not g.players[o]["compiled"][l]
+                and g.line_value(o, l) >= COMPILE_THRESHOLD
+                and g.line_value(o, l) > g.line_value(pi, l)):
+            value += 8.0
+    return value
+
+
+def _greed_1(g, pi, card, line, hand_after):
+    """Greed_1: finish 트리거가 g.compilable_lines(소유자)를 직접 불러
+    지금 당장 컴파일 가능한 라인이 있으면 그 자리에서 즉시 컴파일한다
+    (carddefs.py `_greed_1_finish`). 이 카드를 `line`에 냈다고 가정한
+    각 라인의 예상 값으로 "즉시 컴파일 가능한 라인 수"를 센다 -- 단,
+    compilable_lines 자체가 cant_compile/_blocked_by_opponent_control로
+    막혀 있으면(2라인 우세 시 풀리는 turn-start 전용 예외는 여기 해당
+    없음 -- 이건 즉시 발동하는 finish 트리거라 그 유예가 없다) 전부 0."""
+    if g.cant_compile[pi] or g._blocked_by_opponent_control(pi):
+        return 0.0
+    o = _other(pi)
+    n = 0
+    for l in (1, 2, 3):
+        if not g.players[pi]["compiled"][l]:
+            mine = g.line_value(pi, l) + (card.value if l == line else 0)
+            if mine >= COMPILE_THRESHOLD and mine > g.line_value(o, l):
+                n += 1
+    return n * 8.0
+
+
+def _pride_6(g, pi, card, line, hand_after):
+    """Pride_6: play 시점에 이미 상대가 Control을 쥐고 있으면 그 자리에서
+    스스로를 뒷면으로 뒤집는다(carddefs.py `_pride_6_play`) -- 즉 인쇄된
+    값(6)이 아니라 즉시 뒷면 값(2)으로 깎여 들어간다는 뜻이라 그 낙폭을
+    반영한다. 이후 상대가 Control을 나중에 가져갈 때도 같은 반응이 있지만
+    (reactiveTop afterGainControl), 그건 지속 리스크라 지금은 ongoing 플래그의
+    flat 근사에 맡기고 여기서는 play 시점의 즉시 낙폭만 정밀화한다."""
+    return -4.0 if g.control == _other(pi) else 0.0
+
+
+# ---------------------------------------------------------------------------
+# 일반화된 "이동(shift)" verb 인프라 -- del/ret/flip에 이미 있던
+# _del_prior/_ret_prior/_flip_prior와 나란히, "카드를 다른 라인으로 옮기는"
+# 효과의 기대 가치를 판 상황에 비추어 계산한다. 지금까지는 이동 계열
+# 카드가 전부 {"prior": 상수} 근사로만 채워져 있었다(일반화된 프라이서가
+# 없었으므로) -- 이 두 함수가 그 인프라다.
+#
+# _move_one(carddefs.py)이 filter_fn을 _uncovered_only()로 항상 감싸는 게
+# 우리 엔진의 기본 타겟팅 규칙(명시적으로 "covered"라 하지 않는 한 UNCOVERED
+# 카드만 대상)이므로, 호출부(카드별 fn)가 이 규칙을 아는 채로 자기 filter에
+# 직접 g.is_uncovered(...)를 넣어야 한다 -- Greed_3처럼 그 기본 규칙을
+# 우회해 명시적으로 "covered"를 타겟하는 카드는 이 헬퍼 대신 자체 루프를 쓴다.
+# ---------------------------------------------------------------------------
+
+def _shift_card_value(g, pi, card):
+    """이 카드를 다른 라인으로 옮기는 것 자체의 기대 가치(누가 옮기든
+    좌표만 본다). 상대 카드를 빼내는 거면 그 라인이 임박한 위협일수록
+    크고(위협 있는 라인에서 소재를 뽑아내는 디나이얼), 내 카드를 옮기는
+    거면 기본 이동값에 더해 밑에 깔린 앞면 카드가 다시 드러나 효과가
+    재발동하는 보너스가 붙는다."""
+    owner, line, idx = g.locate(card)
+    if owner is None:
+        return 0.0
+    if owner != pi:
+        threat = _line_threat(g, pi, line)
+        if threat == 2:
+            return 4.0
+        if threat == 1:
+            return 2.0
+        return 0.8
+    value = 0.8
+    stack = g.players[owner]["stacks"][line]
+    if idx > 0:
+        below = stack[idx - 1]
+        if below.face_up and below.definition:
+            value += 0.75
+    return value
+
+
+def _best_shift_where(g, pi, filter_fn, optional=False):
+    """filter_fn(card) -> bool을 만족하고 g.can_move인 판 전체 카드 중
+    이동 가치가 가장 큰 것을 고른다. optional이면(안 옮겨도 그만인 효과)
+    최선이 마이너스일 때 0으로 바닥 -- 나쁜 이동은 그냥 declining."""
+    best = None
+    for card in g.cards_in_play():
+        if g.can_move(card) and filter_fn(card):
+            value = _shift_card_value(g, pi, card)
+            if best is None or value > best:
+                best = value
+    if best is None:
+        return 0.0
+    return max(0.0, best) if optional else best
+
+
+def _pride_0(g, pi, card, line, hand_after):
+    """Pride_0: Control을 쥔 상태로 내면 아무 카드나(자기 자신 제외) 이동,
+    아니면 내 카드만 이동(carddefs.py `_pride_0_play`, 둘 다 `_move_one`을
+    통해 uncovered 카드로 제한됨)."""
+    if g.control == pi:
+        return _best_shift_where(
+            g, pi, lambda c: c.uid != card.uid and g.is_uncovered(c), optional=False)
+    return _best_shift_where(
+        g, pi, lambda c: c.owner == pi and g.is_uncovered(c), optional=False)
+
+
+def _nova_3(g, pi, card, line, hand_after):
+    """Nova_3: 이 라인 스택 카드 수보다 값이 낮은 카드(uncovered)를
+    이동(carddefs.py `_nova_3_play`). effect_prior는 카드가 보드에 놓이기
+    전에 계산되지만 `_nova_3_play`의 count는 이미 놓인 뒤(자기 자신 포함)
+    기준이라, +1로 그 시점을 맞춘다."""
+    if not line:
+        return 0.0
+    limit = len(g.players[pi]["stacks"][line]) + 1
+    return _best_shift_where(
+        g, pi, lambda c: g.is_uncovered(c) and _eff_val(c) < limit, optional=False)
+
+
+def _greed_3(g, pi, card, line, hand_after):
+    """Greed_3: 이 스택에 있는 내 "가려진"(covered) 카드를 다른 라인으로
+    이동(carddefs.py `_greed_3_play`가 `stack[:-1]`로 명시적으로 covered만
+    후보에 넣음 -- 기본 uncovered-only 규칙의 예외라 _best_shift_where 대신
+    직접 루프). effect_prior는 Greed_3 자신이 놓이기 전에 계산되므로, 지금
+    이 라인 스택 전체(비어있지 않은 한)가 곧 Greed_3 밑에 깔려 전부
+    "가려진" 카드가 된다 -- carddefs.py의 `stack[:-1]`(놓인 뒤 자기 자신을
+    뺀 나머지)과 동치."""
+    if not line:
+        return 0.0
+    best = 0.0
+    for c in g.players[pi]["stacks"][line]:
+        if c.owner == pi and g.can_move(c):
+            v = _shift_card_value(g, pi, c)
+            if v > best:
+                best = v
+    return best
+
+
+def _flexible_0(g, pi, card, line, hand_after):
+    """Flexible_0: 카드 1장을 손으로 반환하거나 다른 라인으로 이동
+    (carddefs.py `_flexible_0_play`, 둘 다 선택형) -- 둘 중 더 나은 값."""
+    bounce = _ret_prior(g, pi, {"may": True})
+    shift = _best_shift_where(g, pi, lambda c: g.is_uncovered(c), optional=True)
+    return max(bounce, shift)
+
+
+def _flexible_3(g, pi, card, line, hand_after):
+    """Flexible_3: 상대 카드 1장을 이동하거나 내 프로토콜 2개를 교환
+    (carddefs.py `_flexible_3_play`) -- 이동 쪽만 정밀화하고, 프로토콜
+    교환은 항상 가능한 안전한 대안이라 0.5 바닥으로 근사."""
+    shift = _best_shift_where(
+        g, pi, lambda c: c.owner == _other(pi) and g.is_uncovered(c), optional=True)
+    return max(shift, 0.5)
+
+
+# ---------------------------------------------------------------------------
+# 일반화된 "뒤집기 전체 스캔" 인프라 -- _flip_prior(구조화 spec, 라인별 top
+# 카드만 후보)와 별개로, Main3/Aux3의 여러 카드는 "판 전체(가려진 카드
+# 포함)에서 필터를 만족하는 카드를 뒤집는다"는 더 넓은 대상 범위를 쓴다
+# (_shift_card_value/_best_shift_where와 정확히 같은 필요성).
+# ---------------------------------------------------------------------------
+
+def _flip_swing(g, pi, card):
+    """카드 1장을 뒤집었을 때 pi 입장에서의 값 스윙(+면 유리). _flip_prior의
+    score_one과 동일한 부호 계약(2026-08-03 부호 버그 수정판)."""
+    is_own = card.owner == pi
+    if card.face_up:
+        change = _eff_val(card) - 2  # 앞->뒤 낙폭, eff_val>2일수록 큼
+        return -change if is_own else change
+    if is_own:
+        return card.value - 2  # 내 뒷면 카드는 정체를 아니 정확한 상승폭
+    return -1.5  # 상대의 알 수 없는 카드가 드러나는 리스크(약한 손해)
+
+
+def _best_flip_where(g, pi, filter_fn, optional=False):
+    """filter_fn(card) -> bool을 만족하고 g.can_flip인 판 전체 카드 중
+    뒤집기 스윙이 가장 큰 것을 고른다. optional이면 최선이 마이너스일 때
+    0으로 바닥."""
+    best = None
+    for card in g.cards_in_play():
+        if g.can_flip(card) and filter_fn(card):
+            value = _flip_swing(g, pi, card)
+            if best is None or value > best:
+                best = value
+    if best is None:
+        return 0.0
+    return max(0.0, best) if optional else best
+
+
+def _sum_flip_where(g, pi, filter_fn):
+    """filter_fn을 만족하고 g.can_flip인 판 전체 카드 "전부"를 뒤집는
+    효과의 합산 기대 가치 (Fulcrum_1/Wrath_2/Inert_2처럼 골라내는 게
+    아니라 한꺼번에 다 뒤집는 카드용)."""
+    total = 0.0
+    for card in g.cards_in_play():
+        if g.can_flip(card) and filter_fn(card):
+            total += _flip_swing(g, pi, card)
+    return total
+
+
+# ---------------------------------------------------------------------------
+# Main3/Aux3 bespoke fn -- 2차/3차 배치 (2026-08-03). shift/flip 인프라가
+# 갖춰진 뒤 남은 카드 중, 일반화된 verb로 못 잡거나(조건부 발동, 판 전체
+# 스캔) 기존 근사가 실제 규칙과 어긋나 있던 카드들.
+# ---------------------------------------------------------------------------
+
+def _ambush_1(g, pi, card, line, hand_after):
+    """Ambush_1: 내 값0/1 카드 전부를 뒤집고, 뒤집은 수만큼 뽑는다
+    (carddefs.py `_ambush_1_play`, 대상 제한 없이 소유자+값만 확인 --
+    covered도 포함)."""
+    targets = [c for c in g.cards_in_play()
+               if c.owner == pi and c.uid != card.uid and _eff_val(c) in (0, 1)
+               and g.can_flip(c)]
+    swing = sum(_flip_swing(g, pi, c) for c in targets)
+    return swing + 0.7 * len(targets)
+
+
+def _ambush_2(g, pi, card, line, hand_after):
+    """Ambush_2: 내 가려진 카드 중 값이 가장 낮은 카드를 이동
+    (carddefs.py `_ambush_2_play`)."""
+    covered = [c for c in g.cards_in_play()
+               if c.owner == pi and not g.is_uncovered(c) and g.can_move(c)]
+    if not covered:
+        return 0.0
+    lowest = min(_eff_val(c) for c in covered)
+    tied = [c for c in covered if _eff_val(c) == lowest]
+    return max(_shift_card_value(g, pi, c) for c in tied)
+
+
+def _ambush_4(g, pi, card, line, hand_after):
+    """Ambush_4: 내 라인 맨 위에 뒷면 카드가 하나라도 있으면 1장 뽑기
+    (carddefs.py `_ambush_4_play`) -- 예전엔 항상 낙관적으로 draw=1이었음."""
+    for l in (1, 2, 3):
+        top = g.top_card(pi, l)
+        if top and not top.face_up:
+            return 0.7
+    return 0.0
+
+
+def _envy_1(g, pi, card, line, hand_after):
+    """Envy_1: 상대가 Control을 쥔 상태로 내면 카드 1장을 선택적으로
+    뒤집을 수 있다(carddefs.py `_envy_1_play`). 이후 start 트리거(상대가
+    여전히 Control을 쥔 채 내 턴이 오면 Control을 가져옴)는 미래 상황
+    의존이라 ongoing의 flat 근사로 남겨둔다."""
+    if g.control != _other(pi):
+        return 0.0
+    return _best_flip_where(g, pi, lambda c: g.is_uncovered(c), optional=True)
+
+
+def _envy_2(g, pi, card, line, hand_after):
+    """Envy_2: 상대 손패 수만큼 뽑는다(carddefs.py `_envy_2_play`) --
+    예전엔 고정 draw=2 근사였음."""
+    return 0.7 * len(g.players[_other(pi)]["hand"])
+
+
+def _envy_4(g, pi, card, line, hand_after):
+    """Envy_4: 상대의 컴파일 수가 나보다 많을 때만 카드 1장을 뒤집는다
+    (carddefs.py `_envy_4_play`)."""
+    my_c = sum(1 for l in (1, 2, 3) if g.players[pi]["compiled"][l])
+    opp_c = sum(1 for l in (1, 2, 3) if g.players[_other(pi)]["compiled"][l])
+    if opp_c <= my_c:
+        return 0.0
+    return _best_flip_where(g, pi, lambda c: g.is_uncovered(c), optional=False)
+
+
+def _fulcrum_0(g, pi, card, line, hand_after):
+    """Fulcrum_0: 낼 때 손패가 비어 있으면(=hand_after 0) 상대가 1장
+    버린다(carddefs.py `_fulcrum_0_play`). 이후 startTop(손패가 여전히
+    0장이면 상대가 2장 버림)은 미래 상황 의존이라 ongoing 근사에 맡긴다."""
+    return 0.9 if hand_after == 0 else 0.0
+
+
+def _fulcrum_1(g, pi, card, line, hand_after):
+    """Fulcrum_1: 판 전체(양쪽, 가려짐 무관) 다른 앞면 카드를 전부
+    뒤집고, 라인1-3 스택을 고정 교환한다(carddefs.py `_fulcrum_1_play`).
+    고정 스택 교환 자체의 가치는 계산하지 않고(전술적이지만 소재를 만들지
+    않음), 작은 reach 보너스로만 근사."""
+    swing = _sum_flip_where(g, pi, lambda c: c.uid != card.uid and c.face_up)
+    return swing + 0.3
+
+
+def _fulcrum_2(g, pi, card, line, hand_after):
+    """Fulcrum_2: 낼 때 손패가 정확히 2장이었으면(=hand_after 1) 상대
+    카드 1장 제거(carddefs.py `_fulcrum_2_play`)."""
+    if hand_after != 1:
+        return 0.0
+    return _del_prior(g, pi, {"n": 1, "owner": "enemy"})
+
+
+def _fulcrum_4(g, pi, card, line, hand_after):
+    """Fulcrum_4: 낼 때 손패가 정확히 4장이었으면(=hand_after 3) 1장
+    뽑기(carddefs.py `_fulcrum_4_play`)."""
+    return 0.7 if hand_after == 3 else 0.0
+
+
+def _gluttony_2(g, pi, card, line, hand_after):
+    """Gluttony_2: 낸 후 남은 손패 수만큼 뽑는다(carddefs.py
+    `_gluttony_2_play`, play 시점엔 카드가 이미 손을 떠난 뒤라 hand_after와
+    동치) -- 예전엔 고정 draw=3 근사였음."""
+    return 0.7 * hand_after
+
+
+def _nova_4(g, pi, card, line, hand_after):
+    """Nova_4: 이 라인 스택 카드 수(자기 자신 포함)보다 값이 낮은
+    uncovered 카드를 뒤집는다(carddefs.py `_nova_4_play`) -- 대상 제한이
+    "낮은 값"뿐이라 소유자 무관. 예전엔 일반 flip 태그라 대상 제한을
+    전혀 반영 못 했음."""
+    if not line:
+        return 0.0
+    limit = len(g.players[pi]["stacks"][line]) + 1
+    return _best_flip_where(
+        g, pi, lambda c: g.is_uncovered(c) and _eff_val(c) < limit, optional=False)
+
+
+def _wrath_1(g, pi, card, line, hand_after):
+    """Wrath_1: 뽑기 1은 무조건(태그의 draw=1로 이미 반영). finish는
+    지금 Control을 쥔 상태일 때만 그걸 포기하고 앞면 카드 1장을
+    제거한다(carddefs.py `_wrath_1_finish`) -- Control 포기 비용은
+    Lua 쪽 실측 상수(-1.2)를 그대로 재사용."""
+    if g.control != pi:
+        return 0.0
+    return _del_prior(g, pi, {"n": 1}) - 1.2
+
+
+def _wrath_2(g, pi, card, line, hand_after):
+    """Wrath_2: 카드가 가장 많은 라인(동률이면 하나 선택)의 앞면 카드를
+    전부 뒤집는다(carddefs.py `_wrath_2_play`) -- 예전엔 "양날"이라 고정
+    -0.5로 비관적 근사했지만, 실제로는 라인별 내 카드 vs 상대 카드 구성에
+    따라 크게 유리할 수도 있다."""
+    def count_in_line(l):
+        return len(g.players[1]["stacks"][l]) + len(g.players[2]["stacks"][l])
+    greatest = max(count_in_line(l) for l in (1, 2, 3))
+    best = 0.0
+    for l in (1, 2, 3):
+        if count_in_line(l) == greatest:
+            swing = 0.0
+            for side in (1, 2):
+                for c in g.players[side]["stacks"][l]:
+                    if c.face_up and g.can_flip(c):
+                        swing += _flip_swing(g, pi, c)
+            if swing > best:
+                best = swing
+    return best
+
+
+def _sloth_2(g, pi, card, line, hand_after):
+    """Sloth_2: 내 가려진(covered) 카드 1장을 뒤집는다(carddefs.py
+    `_sloth_2_play`) -- 예전엔 일반 flip 태그라 top 카드만 후보로
+    봤는데, 실제 대상은 정반대(covered만)다."""
+    return _best_flip_where(
+        g, pi, lambda c: c.owner == pi and not g.is_uncovered(c), optional=False)
+
+
+def _flexible_1(g, pi, card, line, hand_after):
+    """Flexible_1: 내 uncovered 카드 1장을 뒤집거나 이동
+    (carddefs.py `_flexible_1_play`) -- 둘 중 더 나은 값."""
+    flip = _best_flip_where(g, pi, lambda c: c.owner == pi and g.is_uncovered(c), optional=True)
+    shift = _best_shift_where(g, pi, lambda c: c.owner == pi and g.is_uncovered(c), optional=True)
+    return max(flip, shift)
+
+
+def _inert_0(g, pi, card, line, hand_after):
+    """Inert_0: 다른 라인(자기 라인 제외)의 앞면 카드 1장을 뒤집는다
+    (carddefs.py `_inert_0_play`, uncovered 제한 없음 -- `_flip_one`을
+    안 거치고 `g.cards_in_play`를 직접 씀)."""
+    if not line:
+        return 0.0
+    return _best_flip_where(
+        g, pi, lambda c: c.face_up and g.locate(c)[1] != line, optional=False)
+
+
+def _inert_2(g, pi, card, line, hand_after):
+    """Inert_2: 각 라인에서 "값이 가장 높은" 앞면 카드 전부를 뒤집는다
+    (동률 전부 포함) -- 그 중 가장 유리한 라인을 고른다(carddefs.py
+    `_inert_2_play`)."""
+    def targets(l):
+        highest = None
+        for side in (1, 2):
+            for x in g.players[side]["stacks"][l]:
+                v = _eff_val(x)
+                if highest is None or v > highest:
+                    highest = v
+        if highest is None:
+            return []
+        out = []
+        for side in (1, 2):
+            for x in g.players[side]["stacks"][l]:
+                if x.face_up and _eff_val(x) == highest and g.can_flip(x):
+                    out.append(x)
+        return out
+
+    best = 0.0
+    for l in (1, 2, 3):
+        cands = targets(l)
+        if cands:
+            swing = sum(_flip_swing(g, pi, x) for x in cands)
+            if swing > best:
+                best = swing
+    return best
+
+
+def _nova_1(g, pi, card, line, hand_after):
+    """Nova_1: 이 스택 카드 수(자기 자신 포함)만큼 상대가 버린다
+    (carddefs.py `_nova_1_play`) -- 예전엔 고정 opp_discard=2 근사였음.
+    opp_discard 태그 필드와 동일한 스케일(0.9/장)을 재사용."""
+    if not line:
+        return 0.0
+    n = len(g.players[pi]["stacks"][line]) + 1
+    return 0.9 * n
+
+
+def _overwhelm_1(g, pi, card, line, hand_after):
+    """Overwhelm_1: 이 플레이 이후 우세한 각 라인에 덱 맨 위를 뒷면으로
+    낸다(carddefs.py `_overwhelm_1_play`) -- deck_plays의 "eligible" 딕셔너리
+    관례와 같은 스케일(1.0/자격 라인)을 쓰되, 이 카드 자신의 (line, value)
+    투영이 필요해 별도 fn으로 둔다."""
+    o = _other(pi)
+    n = 0
+    for l in (1, 2, 3):
+        mine = g.line_value(pi, l) + (card.value if l == line else 0)
+        if mine > g.line_value(o, l):
+            n += 1
+    return 1.0 * n
+
+
+def _pride_4(g, pi, card, line, hand_after):
+    """Pride_4: Control을 쥔 상태로 내면 상대의 다른 라인 카드 1장을
+    이 라인으로 끌어올 수 있다(carddefs.py `_pride_4_play` ->
+    `_move_opponent_to_source_line`, 선택적)."""
+    if g.control != pi or not line:
+        return 0.0
+    return _best_shift_where(
+        g, pi,
+        lambda c: c.owner == _other(pi) and g.is_uncovered(c) and g.locate(c)[1] != line,
+        optional=True)
+
+
+def _rigid_7(g, pi, card, line, hand_after):
+    """Rigid_7: cantFlip+cantMove라 스스로를 절대 숨길 수 없고, finishTop이
+    (carddefs.py `_rigid_7_finish_top`) 매 턴 상대에게 공짜 뽑기 또는
+    플레이를 준다 -- 인쇄값 7 뒤에 숨은 심각한 지속 부채. 여기서는 "이번
+    턴 즉시" 상대가 받는 선물만 값매기고(가장 큰 항목을 취함, Lua의
+    oppPlayOrDrawPrior와 같은 스케일: freePlay=2.5, drawCard=0.7),
+    이후 매 턴 반복되는 부채는 TAGS의 ongoing=-2.5(숫자 오버라이드)가
+    별도로 반영한다."""
+    o = _other(pi)
+    can_play = len(g.players[o]["hand"]) > 0
+    can_draw = not g.draw_blocked(o) and (
+        len(g.players[o]["deck"]) > 0 or len(g.players[o]["discard"]) > 0)
+    gift = 2.5 if can_play else 0.0
+    if can_draw:
+        gift = max(gift, 0.7)
+    return -gift
+
+
+# ---------------------------------------------------------------------------
+# 4차 배치 (2026-08-03) -- Lua 원본을 카드별로 재대조해보니, 이미 갖춘
+# 인프라(_control_gain_value/_best_flip_where/_best_shift_where/_del_prior/
+# _ret_prior/투영 계산)만으로 바로 이식 가능한데 놓쳤던 카드들.
+# ---------------------------------------------------------------------------
+
+def _nova_2(g, pi, card, line, hand_after):
+    """Nova_2: 이 카드가 덮게 될 카드(=지금 이 라인의 top)가 앞면 Nova면
+    선택적 재배열(소액), 아니면 곧바로 Control을 가져온다(carddefs.py
+    `_nova_2_play` + `_covered_nova`)."""
+    if line:
+        below = g.top_card(pi, line)
+        if below and below.face_up and below.proto == "Nova":
+            return 0.7
+    return _control_gain_value(g, pi)
+
+
+def _lust_4(g, pi, card, line, hand_after):
+    """Lust_4: 손패를 공개하고 상대의 Control을 빼앗는다(carddefs.py
+    `_lust_4_play`, 상대가 안 쥐고 있으면 무효). 손패 공개의 소액 정보
+    비용은 항상 붙는다."""
+    value = 2.0 if g.control == _other(pi) else 0.0
+    return value - 0.2
+
+
+def _wrath_4(g, pi, card, line, hand_after):
+    """Wrath_4: 지금 내가 Control을 쥔 상태일 때만, 그걸 포기하고 상대가
+    2장 버리게 한다(carddefs.py `_wrath_4_play`) -- Control 포기 비용은
+    Wrath_1과 동일한 Lua 실측 상수(-1.2) 재사용."""
+    if g.control != pi:
+        return 0.0
+    d = min(2, len(g.players[_other(pi)]["hand"]))
+    return 0.9 * d - 1.2
+
+
+def _greed_0(g, pi, card, line, hand_after):
+    """Greed_0: 손패를 전부 버리고(cost) 카드 1장을 제거한 뒤, 제거가
+    실제로 일어났으면 반응으로 1장 뽑는다(carddefs.py `_greed_0_play` +
+    `_greed_0_after_delete`)."""
+    discard_cost = -0.9 * hand_after
+    deletion = _del_prior(g, pi, {"n": 1})
+    draw_bonus = 0.7 if deletion != 0 else 0.0
+    return discard_cost + deletion + draw_bonus
+
+
+def _greed_4(g, pi, card, line, hand_after):
+    """Greed_4: 손패를 전부 버릴 수 있고(선택), 그러면 카드 1장을
+    뒤집는다(carddefs.py `_greed_4_play`, 대상 제한 없음)."""
+    if hand_after == 0:
+        return 0.0
+    flip = _best_flip_where(g, pi, lambda c: g.is_uncovered(c), optional=False)
+    return max(0.0, flip - 0.9 * hand_after)
+
+
+def _lust_2(g, pi, card, line, hand_after):
+    """Lust_2: 상대의 다른 라인에 있는 가려진 카드 1장을 이 라인으로
+    끌어올 수 있다(carddefs.py `_lust_2_play`, 선택)."""
+    if not line:
+        return 0.0
+    return _best_shift_where(
+        g, pi,
+        lambda c: c.owner == _other(pi) and g.locate(c)[1] != line and not g.is_uncovered(c),
+        optional=True) + 0.4
+
+
+def _lust_6(g, pi, card, line, hand_after):
+    """Lust_6: (self_discard 태그가 내 비용은 이미 반영) 이 라인에
+    합법적으로 낼 수 있고 상대 손패가 있으면, 상대가 이 라인에 카드
+    1장을 강제로 뒷면 플레이한다(carddefs.py `_lust_6_play`) -- 상대에게
+    판 소재를 공짜로 주는 셈이라 순손실."""
+    if not line:
+        return 0.0
+    o = _other(pi)
+    if not g.players[o]["hand"]:
+        return 0.0
+    can_play, _reason = g.can_play_face_down(pi, None, line)
+    if not can_play:
+        return 0.0
+    return -1.4
+
+
+def _inert_4(g, pi, card, line, hand_after):
+    """Inert_4: 양쪽 덱을 전부 트래시로 보낸다(carddefs.py
+    `_inert_4_play`) -- 파괴가 아니라 재활용 가능한 이동이라, 상대적
+    디스카운트만 반영(내 덱이 상대보다 많이 남아있을 때만 손해)."""
+    o = _other(pi)
+    return 0.08 * (len(g.players[o]["deck"]) - len(g.players[pi]["deck"]))
+
+
+def _pride_2(g, pi, card, line, hand_after):
+    """Pride_2: 이 플레이 이후 내가 우세한 라인 수만큼 뽑는다
+    (carddefs.py `_pride_2_play` + `_line_comparison_count`, ahead=True)."""
+    o = _other(pi)
+    n = 0
+    for l in (1, 2, 3):
+        mine = g.line_value(pi, l) + (card.value if l == line else 0)
+        if mine > g.line_value(o, l):
+            n += 1
+    return 0.7 * n
+
+
+def _sloth_0(g, pi, card, line, hand_after):
+    """Sloth_0: 이 플레이 이후 내가 열세인 라인 수만큼 뽑는다
+    (carddefs.py `_sloth_0_play` + `_line_comparison_count`, ahead=False)."""
+    o = _other(pi)
+    n = 0
+    for l in (1, 2, 3):
+        mine = g.line_value(pi, l) + (card.value if l == line else 0)
+        if mine < g.line_value(o, l):
+            n += 1
+    return 0.7 * n
+
+
+def _sloth_1(g, pi, card, line, hand_after):
+    """Sloth_1: 카드 1장을 소유자에게 돌려준다(대상 제한 없음, 선택) --
+    상대 카드를 돌려주면 순수 이득, 내 카드를 돌려주면(carddefs.py
+    `_sloth_1_play`) 손패가 적을수록 커지는 리프레시 보너스가 추가로
+    붙는다."""
+    enemy_ret = _ret_prior(g, pi, {"owner": "enemy", "may": True})
+    own_ret = _ret_prior(g, pi, {"owner": "own", "may": True})
+    if own_ret != 0:
+        own_ret += 0.6 * max(0, 5 - (hand_after + 1))
+    return max(enemy_ret, own_ret)
+
 
 # =============================================================================
 # AUX 1 -- LOVE / APATHY / HATE
@@ -298,7 +914,7 @@ TAGS["Diversity_1"] = {"draw": 2}  # 이동 + 이 라인 프로토콜 종류 수
 TAGS["Diversity_3"] = {"ongoing": True}  # 패시브: 조건부 +2
 TAGS["Diversity_4"] = {"flip": {"n": 1}}
 TAGS["Diversity_5"] = {"self_discard": 1}
-TAGS["Diversity_6"] = {"ongoing": True}  # End: 조건부 자기 제거(리스크)
+TAGS["Diversity_6"] = {"ongoing": True, "selfDeleteRisk": "diversity6"}  # End: 조건부 자기 제거(리스크)
 
 # --- UNITY ---
 TAGS["Unity_0"] = {"ongoing": True}  # 조건부 뒤집기or뽑기(+onCovered 동일 트리거)
@@ -319,54 +935,54 @@ TAGS["Unity_5"] = {"self_discard": 1}
 
 # --- AMBUSH ---
 TAGS["Ambush_0"] = {"draw": 3, "flip": {"n": 1, "owner": "own"}}
-TAGS["Ambush_1"] = {"ongoing": True}  # 값0·1 내 카드 전부 뒤집고 뒤집은 수만큼 뽑기(가변)
-TAGS["Ambush_2"] = {"prior": 0.5}  # 내 가려진 최저값 카드 재배치
+TAGS["Ambush_1"] = {"fn": _ambush_1}  # 값0·1 내 카드 전부 뒤집고 뒤집은 수만큼 뽑기(가변)
+TAGS["Ambush_2"] = {"fn": _ambush_2}  # 내 가려진 최저값 카드 재배치
 TAGS["Ambush_3"] = {"flip": {"n": 1, "owner": "enemy"}}
-TAGS["Ambush_4"] = {"draw": 1}  # 조건부(드러난 뒷면 카드 필요) 낙관적 근사
+TAGS["Ambush_4"] = {"fn": _ambush_4}  # 조건부(드러난 뒷면 카드 필요)
 TAGS["Ambush_5"] = {"self_discard": 1}
 
 # --- ENVY ---
 TAGS["Envy_0"] = {"ongoing": True}  # 패시브: 상대 최고값만큼 이 라인 값 증가
-TAGS["Envy_1"] = {"ongoing": True}  # 조건부 뒤집기 + 시작 조건부 컨트롤 탈취
-TAGS["Envy_2"] = {"draw": 2}  # 상대 손패 수만큼(근사)
+TAGS["Envy_1"] = {"fn": _envy_1, "ongoing": True}  # 조건부 뒤집기 + 시작 조건부 컨트롤 탈취
+TAGS["Envy_2"] = {"fn": _envy_2}  # 상대 손패 수만큼
 TAGS["Envy_3"] = {"ongoing": True}  # 리액티브: 상대가 이 라인에 낸 뒤 덱 맨 위 뒷면 플레이
-TAGS["Envy_4"] = {"ongoing": True}  # 조건부(상대 컴파일 수 > 나) 뒤집기
+TAGS["Envy_4"] = {"fn": _envy_4}  # 조건부(상대 컴파일 수 > 나) 뒤집기
 TAGS["Envy_5"] = {"self_discard": 1}
 
 # --- FULCRUM ---
-TAGS["Fulcrum_0"] = {"ongoing": True}  # 조건부(손패 0장) 상대 버리기
-TAGS["Fulcrum_1"] = {"prior": 1.0}  # 다른 앞면 카드 전부 뒤집기(양날) + 스택 교환
-TAGS["Fulcrum_2"] = {"ongoing": True}  # 조건부(손패 정확히 2장) 상대 카드 제거
+TAGS["Fulcrum_0"] = {"fn": _fulcrum_0, "ongoing": True}  # 조건부(손패 0장) 상대 버리기
+TAGS["Fulcrum_1"] = {"fn": _fulcrum_1}  # 다른 앞면 카드 전부 뒤집기(양날) + 스택 교환
+TAGS["Fulcrum_2"] = {"fn": _fulcrum_2}  # 조건부(손패 정확히 2장) 상대 카드 제거
 TAGS["Fulcrum_3"] = {"draw": 1, "prior": 0.5}  # 뽑기 + 좌우 프로토콜 교환
-TAGS["Fulcrum_4"] = {"draw": 1}  # 조건부(손패 정확히 4장) 낙관적 근사
+TAGS["Fulcrum_4"] = {"fn": _fulcrum_4}  # 조건부(손패 정확히 4장)
 TAGS["Fulcrum_5"] = {"self_discard": 1}
 
 # --- GLUTTONY ---
-TAGS["Gluttony_0"] = {"ongoing": True}  # 리액티브(캐시 정리 후 덱플레이) + 반환 + 뽑기
+TAGS["Gluttony_0"] = {"ret": {}, "draw": 1, "ongoing": True}  # 반환 + 뽑기 + 리액티브(캐시 정리 후 덱플레이)
 TAGS["Gluttony_1"] = {"draw": 2, "ongoing": True}  # 뽑기 + 리액티브(캐시 정리 후 제거, 자기포함)
-TAGS["Gluttony_2"] = {"draw": 3}  # 내 손패 수만큼(근사)
+TAGS["Gluttony_2"] = {"fn": _gluttony_2}  # 내 손패 수만큼
 TAGS["Gluttony_3"] = {"draw": 2}  # + 종료 조건부 제거(방어적 보너스, 근사 생략)
 TAGS["Gluttony_4"] = {"ongoing": True}  # 리액티브: 내가 리프레시한 뒤 뽑기
 TAGS["Gluttony_5"] = {"self_discard": 1}
 
 # --- GREED ---
-TAGS["Greed_0"] = {"ongoing": True}  # 손패 전부 버리기 + 제거 + 리액티브 뽑기(가변)
-TAGS["Greed_1"] = {"ongoing": True}  # 조건부(10 이상+우세) 즉시 컴파일 -- 강력하지만 조건부
+TAGS["Greed_0"] = {"fn": _greed_0}  # 손패 전부 버리기 + 제거 + 리액티브 뽑기(가변)
+TAGS["Greed_1"] = {"fn": _greed_1, "ongoing": True}  # 조건부(10 이상+우세) 즉시 컴파일 -- 강력하지만 조건부
 TAGS["Greed_2"] = {"opp_discard": 1}  # + 시작 선택적 반환
-TAGS["Greed_3"] = {"prior": 0.5}  # 이 스택 내 가려진 카드 재배치
-TAGS["Greed_4"] = {"ongoing": True}  # 선택적 손패 전부 버리기 -> 뒤집기(가변)
+TAGS["Greed_3"] = {"fn": _greed_3}  # 이 스택 내 가려진 카드 재배치
+TAGS["Greed_4"] = {"fn": _greed_4}  # 선택적 손패 전부 버리기 -> 뒤집기(가변)
 TAGS["Greed_5"] = {"self_discard": 1}
 
 # --- LUST (값 1 없음) ---
-TAGS["Lust_0"] = {"ongoing": True}  # 패시브(양쪽 +10) + 컨트롤 탈취 + 상대 컴파일 봉쇄
-TAGS["Lust_2"] = {"ongoing": True}  # 패시브(프로토콜 무관 플레이) + 선택적 상대 카드 이동
+TAGS["Lust_0"] = {"fn": _lust_0, "ongoing": True}  # 패시브(양쪽 +10) + 컨트롤 탈취 + 상대 컴파일 봉쇄
+TAGS["Lust_2"] = {"fn": _lust_2, "ongoing": True}  # 패시브(프로토콜 무관 플레이) + 선택적 상대 카드 이동
 TAGS["Lust_3"] = {"ongoing": True}  # 상대 무작위 카드 공개+상대쪽 플레이 + 종료 조건부 컨트롤 포기
-TAGS["Lust_4"] = {"ongoing": True}  # 손패 공개 + 상대 컨트롤 박탈 + 리액티브 뽑기
+TAGS["Lust_4"] = {"fn": _lust_4, "ongoing": True}  # 손패 공개 + 상대 컨트롤 박탈 + 리액티브 뽑기
 TAGS["Lust_5"] = {"self_discard": 1}
-TAGS["Lust_6"] = {"self_discard": 1, "prior": -0.5}  # + 상대에게 강제 뒷면 플레이 시킴(약한 이득)
+TAGS["Lust_6"] = {"self_discard": 1, "fn": _lust_6}  # + 상대에게 강제 뒷면 플레이 시킴(순손실)
 
 # --- MOMENTUM (값 2 없음) ---
-TAGS["Momentum_0"] = {"prior": 1.0}  # 컴파일된 라인마다 덱 맨 위 뒷면 플레이(라인 수 가변)
+TAGS["Momentum_0"] = {"deck_plays": {"eligible": "compiled_line"}}  # 컴파일된 라인마다 덱 맨 위 뒷면 플레이(라인 수 가변)
 TAGS["Momentum_1"] = {"ongoing": True}  # 리액티브 2종(컴파일 후 덱플레이, 재배열 후 버리기+뽑기)
 TAGS["Momentum_3"] = {"draw": 2}
 TAGS["Momentum_4"] = {"prior": 0.5}  # 내 프로토콜 재배열
@@ -375,14 +991,14 @@ TAGS["Momentum_6"] = {"self_discard": 1, "ongoing": True}  # + 리액티브 자�
 
 # --- NOVA ---
 TAGS["Nova_0"] = {"ongoing": True}  # 시작 조건부 제거 + 컨트롤자가 재배열 + 종료 조건부 덱플레이
-TAGS["Nova_1"] = {"opp_discard": 2}  # 이 스택 카드 수만큼(근사)
-TAGS["Nova_2"] = {"ongoing": True}  # 조건부 재배열or컨트롤 탈취 + 리액티브 이동
-TAGS["Nova_3"] = {"prior": 0.5}  # 스택 카드 수보다 값 낮은 카드 이동
-TAGS["Nova_4"] = {"flip": {"n": 1}}  # 스택 카드 수보다 값 낮은 카드 뒤집기
+TAGS["Nova_1"] = {"fn": _nova_1}  # 이 스택 카드 수만큼
+TAGS["Nova_2"] = {"fn": _nova_2, "ongoing": True}  # 조건부 재배열or컨트롤 탈취 + 리액티브 이동
+TAGS["Nova_3"] = {"fn": _nova_3}  # 스택 카드 수보다 값 낮은 카드 이동
+TAGS["Nova_4"] = {"fn": _nova_4}  # 스택 카드 수보다 값 낮은 카드 뒤집기
 TAGS["Nova_5"] = {"self_discard": 1}
 
 # --- OVERWHELM (값 0 없음) ---
-TAGS["Overwhelm_1"] = {"prior": 1.0}  # 우세한 각 라인에 덱 맨 위 뒷면 플레이(라인 수 가변)
+TAGS["Overwhelm_1"] = {"fn": _overwhelm_1}  # 우세한 각 라인에 덱 맨 위 뒷면 플레이(라인 수 가변)
 TAGS["Overwhelm_2"] = {"ongoing": True}  # 종료 전 라인 덱플레이+자기뒤집기 + 상대도 전 라인 덱플레이
 TAGS["Overwhelm_3"] = {"ongoing": True}  # 종료 조건부(손패 5장 이상) 덱플레이
 TAGS["Overwhelm_4"] = {"ongoing": True}  # 조건부(카드 수 우세) 상대 최저값 가려진 카드 제거
@@ -390,56 +1006,52 @@ TAGS["Overwhelm_5"] = {"self_discard": 1}
 TAGS["Overwhelm_6"] = {"ongoing": True}  # 시작 조건부(상대 우세) 자기 뒤집기 -- 대체로 손해
 
 # --- PRIDE (값 1 없음) ---
-TAGS["Pride_0"] = {"ongoing": True}  # 리액티브(컴파일 후 리프레시) + 조건부 카드 이동
-TAGS["Pride_2"] = {"draw": 1}  # 우세 라인 수만큼(근사) + 시작 조건부 추가 뽑기
+TAGS["Pride_0"] = {"fn": _pride_0, "ongoing": True}  # 리액티브(컴파일 후 리프레시) + 조건부 카드 이동
+TAGS["Pride_2"] = {"fn": _pride_2}  # 우세 라인 수만큼 + 시작 조건부 추가 뽑기
 TAGS["Pride_3"] = {"flip": {"n": 1, "owner": "own"}}
-TAGS["Pride_4"] = {"ongoing": True}  # 조건부(컨트롤 보유) 상대 카드 이동
+TAGS["Pride_4"] = {"fn": _pride_4}  # 조건부(컨트롤 보유) 상대 카드 이동
 TAGS["Pride_5"] = {"self_discard": 1}
-TAGS["Pride_6"] = {"ongoing": True}  # 리액티브/조건부 자기 뒤집기 -- 대체로 손해
+TAGS["Pride_6"] = {"fn": _pride_6, "ongoing": True}  # 리액티브/조건부 자기 뒤집기 -- 대체로 손해
 
 # --- SLOTH ---
-TAGS["Sloth_0"] = {"ongoing": True}  # 패시브(나태 카드 밑이면 +5) + 열세 라인 수만큼 뽑기
-TAGS["Sloth_1"] = {"ongoing": True}  # 반환 + 조건부 리프레시 + 리액티브 덱플레이
-TAGS["Sloth_2"] = {"flip": {"n": 1, "owner": "own"}, "ongoing": True}  # + 시작 선택적 손->덱바닥
+TAGS["Sloth_0"] = {"fn": _sloth_0, "ongoing": True}  # 패시브(나태 카드 밑이면 +5) + 열세 라인 수만큼 뽑기
+TAGS["Sloth_1"] = {"fn": _sloth_1}  # 반환 + 조건부 리프레시 + 리액티브 덱플레이
+TAGS["Sloth_2"] = {"fn": _sloth_2, "ongoing": True}  # + 시작 선택적 손->덱바닥
 TAGS["Sloth_3"] = {"opp_discard": 2}
 TAGS["Sloth_4"] = {"ongoing": True}  # onCovered: 앞면 카드 1장 먼저 뒤집기
 TAGS["Sloth_5"] = {"self_discard": 1}
 
 # --- WRATH ---
 TAGS["Wrath_0"] = {"ongoing": True}  # 패시브(최고값 카드 무효) + 덱 맨 위 뒷면 플레이
-TAGS["Wrath_1"] = {"draw": 1, "ongoing": True}  # + 종료 조건부 컨트롤 포기->제거
-TAGS["Wrath_2"] = {"prior": -0.5}  # 카드 최다 라인 앞면 전부 뒤집기(양날, 대체로 위험)
+TAGS["Wrath_1"] = {"draw": 1, "fn": _wrath_1}  # + 종료 조건부 컨트롤 포기->제거
+TAGS["Wrath_2"] = {"fn": _wrath_2}  # 카드 최다 라인 앞면 전부 뒤집기(양날)
 TAGS["Wrath_3"] = {"flip": {"n": 1}}
-TAGS["Wrath_4"] = {"ongoing": True}  # 컨트롤 포기 -> 상대 버리기(조건부)
+TAGS["Wrath_4"] = {"fn": _wrath_4}  # 컨트롤 포기 -> 상대 버리기(조건부)
 TAGS["Wrath_5"] = {"self_discard": 1}
 
 # --- FLEXIBLE ---
-TAGS["Flexible_0"] = {"prior": 0.5}  # 카드 1장 반환 또는 이동(대상 제한 없음)
-TAGS["Flexible_1"] = {"prior": 0.5}  # 내 카드 1장 뒤집기 또는 이동
+TAGS["Flexible_0"] = {"fn": _flexible_0}  # 카드 1장 반환 또는 이동(대상 제한 없음)
+TAGS["Flexible_1"] = {"fn": _flexible_1}  # 내 카드 1장 뒤집기 또는 이동
 TAGS["Flexible_2"] = {"draw": 1}  # + 종료 조건부 뒷면 카드 이동
-TAGS["Flexible_3"] = {"prior": 0.5}  # 상대 카드 이동 또는 내 프로토콜 2개 교환
+TAGS["Flexible_3"] = {"fn": _flexible_3}  # 상대 카드 이동 또는 내 프로토콜 2개 교환
 TAGS["Flexible_4"] = {"ongoing": True}  # 종료 선택적 뽑기2 -> 뒤집기
 TAGS["Flexible_5"] = {"self_discard": 1}
 
 # --- INERT ---
-TAGS["Inert_0"] = {"ongoing": True}  # 패시브(이 라인 상단명령 무효) + 다른 라인 뒤집기
+TAGS["Inert_0"] = {"fn": _inert_0, "ongoing": True}  # 패시브(이 라인 상단명령 무효) + 다른 라인 뒤집기
 TAGS["Inert_1"] = {"opp_discard": 2}  # + 패시브(이 라인 하단명령 무효)
-TAGS["Inert_2"] = {"prior": -0.3}  # 한 라인 최고값 카드 전부 뒤집기(양날, 대체로 위험)
+TAGS["Inert_2"] = {"fn": _inert_2}  # 한 라인 최고값 카드 전부 뒤집기(양날)
 TAGS["Inert_3"] = {"ongoing": True}  # 손패 소모해 다른 각 라인 뒷면 플레이 + 상대도 여기 플레이
-TAGS["Inert_4"] = {"ongoing": True}  # 내 덱 전체 버리기 + 상대 덱 전체 버리기(상호)
+TAGS["Inert_4"] = {"fn": _inert_4}  # 내 덱 전체 버리기 + 상대 덱 전체 버리기(상호)
 TAGS["Inert_5"] = {"self_discard": 1}
 
 # --- RIGID (값 0, 6 없음) ---
-TAGS["Rigid_1"] = {"flip": {"n": 1, "owner": "enemy"}, "ongoing": True}  # + 종료 조건부 뒷면 플레이
+TAGS["Rigid_1"] = {"flip": {"n": 1, "owner": "enemy", "from_face": "up"}, "ongoing": True}  # + 종료 조건부 뒷면 플레이
 TAGS["Rigid_2"] = {"ongoing": True}  # 리액티브: 내 행동 뒷면 플레이 후 덱 맨 위 추가 플레이
 TAGS["Rigid_3"] = {"prior": 0.3}  # 손 카드를 이 카드 바로 밑에 뒷면으로
 TAGS["Rigid_4"] = {"ongoing": True}  # onCovered: 뒷면 카드에 덮이려 할 때 먼저 뽑기(방어)
 TAGS["Rigid_5"] = {"self_discard": 1}
-TAGS["Rigid_7"] = {"self_discard": 1, "ongoing": True}  # 뒤집기/이동 불가 + 종료 상대에게 뽑기or플레이
-
-
-def _other(pi):
-    return 2 if pi == 1 else 1
+TAGS["Rigid_7"] = {"self_discard": 1, "fn": _rigid_7, "ongoing": -2.5}  # 뒤집기/이동 불가 + 종료 상대에게 뽑기or플레이(심각한 지속 부채, +0.8이 아니라 마이너스여야 함)
 
 
 def _eff_val(card):
@@ -447,11 +1059,38 @@ def _eff_val(card):
     return card.value if card.face_up else 2
 
 
+def compile_available_next_check(g, pi, winning=None):
+    """pi가 다음 자기 턴 시작(check_control -> compilable_lines 순서, engine.py
+    run_turn)에 실제로 컴파일을 실행할 수 있는 상태인가.
+
+    cant_compile[pi]는 무조건적 1회성 봉쇄라 즉시 False. 그 외엔
+    _blocked_by_opponent_control(Lust_0: 상대가 Control을 쥐고 blockOpponent
+    CompileWithControl 카드를 드러내 놓은 상태)이 관건인데, 이 봉쇄는
+    "영구"가 아니다 -- run_turn은 컴파일 판정보다 먼저 check_control()을
+    돌려서 pi가 2라인 이상 우세하면 Control을 pi에게 넘겨버리므로, 그 순간
+    Lust_0의 조건(상대가 Control을 쥠)이 깨져 봉쇄가 자동으로 풀린다.
+    `winning`은 호출부가 이미 계산해둔(또는 액션 적용 후 예상되는) 우세
+    라인 수를 넘길 수 있게 하는 선택적 인자 -- 없으면 지금 판 상태 그대로
+    센다."""
+    if g.cant_compile[pi]:
+        return False
+    if not g._blocked_by_opponent_control(pi):
+        return True
+    n = winning if winning is not None else g.lines_winning_count(pi)
+    return n >= 2
+
+
 def _line_threat(g, me, line):
     """0/1/2 -- 상대가 이 라인에서 컴파일에 얼마나 가까운가.
-    (엔진의 line_value가 패시브 보정까지 반영된 값이라 이걸 그대로 씀.)"""
+    (엔진의 line_value가 패시브 보정까지 반영된 값이라 이걸 그대로 씀.)
+
+    임계값을 넘어 우세해도, 상대가 Lust_0류 동적 봉쇄에 걸려 다음 자기 턴
+    시작에 실제로 컴파일을 실행할 수 없는 상태라면 위협이 아니다 --
+    compile_available_next_check로 그 가용성부터 확인한다."""
     o = _other(me)
     if g.players[o]["compiled"][line]:
+        return 0
+    if not compile_available_next_check(g, o):
         return 0
     ov, mv = g.line_value(o, line), g.line_value(me, line)
     if ov <= mv:
@@ -537,20 +1176,28 @@ def _flip_prior(g, pi, spec):
             for target_pi in (1, 2):
                 for card in g.players[target_pi]["stacks"][line]:
                     if card.face_up:
-                        change = 2 - _eff_val(card)  # 앞->뒤: 값이 2로 떨어짐
+                        # 앞->뒤: 값이 2로 떨어짐 -- eff_val>2인 카드일수록 그
+                        # 낙폭(change)이 큼. 이 낙폭은 카드 소유자에게는 손실,
+                        # 상대에게는 그만큼 이득이다(아래 delta 부호가 반영).
+                        change = _eff_val(card) - 2
                         delta += change if target_pi == o else -change
             best = max(best, delta)
         return best * 0.9
 
     def score_one(card, owner_pi):
         was_up = card.face_up
-        change = (2 - _eff_val(card)) if was_up else (card.value - 2)
+        # 앞->뒤 낙폭: eff_val>2일수록 큼(값2 카드는 낙폭 없음). 버그 이력:
+        # 예전엔 이 부호가 뒤집혀 있어서(2 - eff_val) "상대의 강한 앞면
+        # 카드를 뒤집어 깎는" 명백히 좋은 수가 마이너스로 채점되고 있었다
+        # (Apathy_3/Love_4 등 flip 태그를 쓰는 카드 전부에 영향).
+        change = (_eff_val(card) - 2) if was_up else (card.value - 2)
         # 상대 카드를 뒤집는 건: 앞->뒤(값 깎기)는 이득, 뒤->앞(정체 불명 공개)은
         # 리스크라 약한 손해로 침. 내 카드는 그 반대.
         if owner_pi == o:
             return change if was_up else -1.5
         return -change if was_up else (card.value - 2) * 0.5
 
+    from_face = spec.get("from_face")  # "up"/"down"/None -- 예전엔 선언만 되고 안 읽혔음
     cands = []
     for target_pi in (1, 2):
         if owner_filter == "enemy" and target_pi != o:
@@ -559,7 +1206,9 @@ def _flip_prior(g, pi, spec):
             continue
         for line in (1, 2, 3):
             top = g.top_card(target_pi, line)
-            if top:
+            if top and (from_face is None
+                        or (from_face == "up" and top.face_up)
+                        or (from_face == "down" and not top.face_up)):
                 cands.append(score_one(top, target_pi))
     if not cands:
         return 0
@@ -583,9 +1232,28 @@ def _deck_plays_prior(g, pi, spec):
         n = sum(1 for l in (1, 2, 3) if g.facedown_in_line(l) > 0)
     elif pred == "own_line":  # Life_0: 내 카드가 있는 라인마다
         n = sum(1 for l in (1, 2, 3) if g.players[pi]["stacks"][l])
+    elif pred == "compiled_line":  # Momentum_0: 양쪽 어느 한쪽이라도 컴파일한 라인마다
+        n = sum(1 for l in (1, 2, 3)
+                if g.players[1]["compiled"][l] or g.players[2]["compiled"][l])
     else:
         n = spec.get("n", 0)
     return 1.0 * n
+
+
+def _self_delete_risk_prior(g, spec):
+    """selfDeleteRisk 효과 1건의 기대 손해. 이 카드를 지금 앞면으로 내면
+    같은 턴 End 페이즈에서 곧바로 자기 제거될 조건이 이미 성립하는가를
+    미리 채점한다(Diversity_6: 판 전체 앞면 카드의 서로 다른 프로토콜
+    종류가 4개 미만이면 자기 제거)."""
+    if spec == "diversity6":
+        # 이 카드 자신도 "Diversity" 프로토콜 1종을 새로 보태므로, 아직
+        # 판에 다른 Diversity 앞면 카드가 없다면 +1까지 감안해서 판단한다.
+        already_has_diversity = any(x.face_up and x.proto == "Diversity"
+                                     for x in g.cards_in_play())
+        current = _distinct_protos_in_play(g)
+        after = current if already_has_diversity else current + 1
+        return after < 4
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -630,10 +1298,38 @@ def effect_prior(g, pi, card, line=None):
         # 손패에서 카드를 하나 더 낼 기회 -- 손이 있어야 의미 있음.
         if g.players[pi]["hand"]:
             s += 2.2
-    if tag.get("ongoing"):
+    ongoing = tag.get("ongoing")
+    if ongoing is True:
         s += 0.8
+    elif isinstance(ongoing, (int, float)):
+        # bool은 int의 서브클래스라 위에서 먼저 걸러야 True가 여기로 안 샌다.
+        # 명시적 숫자(예: Rigid_7의 -2.5)는 그 값 그대로 쓴다 -- 대부분의
+        # 지속효과는 flat +0.8 근사로 충분하지만, 극히 드물게 "인쇄값에
+        # 비해 명백한 순손실"인 카드(Rigid_7)는 부호 자체가 반대라 이
+        # 일률적인 +0.8이 틀린 방향으로 채점한다.
+        s += ongoing
     if tag.get("block_compile"):
         s += 7.0
+    if tag.get("selfDeleteRisk") and _self_delete_risk_prior(g, tag["selfDeleteRisk"]):
+        # 지속효과 보너스(ongoing +0.8)를 상쇄하고도 남을 만큼 확실한
+        # 손해로 취급 -- 이 카드를 낸 바로 그 턴의 End 페이즈에 자기
+        # 제거될 조건이 이미 성립해 있다는 뜻이므로, 사실상 판 진전 없이
+        # 카드 한 장과 턴 하나를 그냥 버리는 셈이다.
+        s -= 8.0
+    # 문맥과 무관한 flat rider (정보 공개, 재배열 등 del/ret/flip 같은
+    # 일반화 가능한 verb로 안 잡히는 자잘한 효과). 콜백도 허용(호출 시점의
+    # 판 상황을 반영해야 하는 조건부 flat rider용).
+    prior = tag.get("prior")
+    if prior is not None:
+        s += prior(g, pi, card, line, hand_after) if callable(prior) else prior
+    # 판 상황을 직접 읽어야 하는(일반화된 verb로 못 잡는) 카드 전용 채점
+    # 함수 -- ai_prior.lua의 tag.fn과 동일한 계약: (g, pi, card, line,
+    # handAfter) -> 점수. del/ret/flip/draw/... 같은 일반 verb 위에
+    # 얹어지는 보정/추가 효과로, fn이 그 카드 효과의 나머지 전부(또는
+    # 전체)를 담당한다.
+    fn = tag.get("fn")
+    if fn is not None:
+        s += fn(g, pi, card, line, hand_after)
     return s
 
 
@@ -778,7 +1474,18 @@ def score_action(g, pi, action):
     new_mine = my_line + contrib
     score = contrib
 
-    if new_mine >= COMPILE_THRESHOLD and new_mine > opp_line:
+    # 이 플레이가 만드는 라인 우세 형세를 미리 반영해, "다음 컴파일 체크가
+    # 실제로 열리는가"(Lust_0류 봉쇄는 2라인 이상 우세일 때 Control 체크가
+    # 먼저 풀어준다)를 정확히 판단한다. 임계값을 넘겨도 이 체크가 안 열리면
+    # 그냥 재컴파일 대기가 아니라 컴파일 자체가 안 되므로 +60은 과대평가.
+    projected_wins = 0
+    for l in (1, 2, 3):
+        mine = new_mine if l == line else g.line_value(pi, l)
+        if mine > g.line_value(o, l):
+            projected_wins += 1
+    compile_available = compile_available_next_check(g, pi, projected_wins)
+
+    if compile_available and new_mine >= COMPILE_THRESHOLD and new_mine > opp_line:
         score += -20 if g.players[pi]["compiled"][line] else 60
     threat = _line_threat(g, pi, line)
     if threat > 0 and new_mine >= opp_line:
@@ -975,6 +1682,20 @@ def choose_line(g, req):
                 top = g.top_card(me, l)
                 if top and top.uid == source_uid:
                     s -= 1000
+            if intent == "move":
+                # 이 라인이 이미 컴파일 조건(값 10 이상 + 우세)을 만족했다면,
+                # 누가 컴파일하든(do_compile은 그 라인의 양쪽 카드를 전부
+                # 지움) 카드를 옮겨봐야 대체로 곧 같이 사라진다 -- 다만
+                # 원천 배제(-1000)는 아니고 약한 페널티만 준다: 상대의
+                # 값비싼 카드를 그 라인으로 옮겨 상대 자신의 컴파일에
+                # 같이 날려버리거나, 내 카드로 상대 우세를 뒤집어 컴파일
+                # 자체를 막는 것처럼 더 강한 이유가 있으면(line_value
+                # 비교 자체가 크게 유리해지므로) 여전히 그쪽을 고를 수
+                # 있어야 한다(260803_logic_fix.md 버그 #3).
+                me_ready = g.line_value(me, l) >= COMPILE_THRESHOLD and g.winning_line(me, l)
+                opp_ready = g.line_value(o, l) >= COMPILE_THRESHOLD and g.winning_line(o, l)
+                if me_ready or opp_ready:
+                    s -= 6
             return s
         return best(score_play)
     return best(lambda l: g.line_value(me, l))

@@ -458,8 +458,8 @@ def _directly_above(g, card):
 
 def _play_hand_face_down(g, pi, line, opts=None):
     """손 카드 하나를 line에 뒷면으로 낸다 -- pi가 아닌 다른 좌석에 낼 수도
-    있고(opts.side), 특정 카드 바로 밑에 낼 수도 있다(opts.underCard)
-    (Inert_3/Rigid_1/Rigid_3)."""
+    있고(opts.side), "특정 카드 밑에" 낼 수도 있다(opts.underCard, Rigid_3)
+    -- 실제로는 그 카드를 정상적으로 덮는다(engine.py의 play_card 참고)."""
     opts = opts or {}
     if not g.players[pi]["hand"] or not g.can_play_face_down(pi, None, line)[0]:
         return None
