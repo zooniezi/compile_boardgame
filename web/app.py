@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.game.ai_random import RandomAI
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_ismcts_learned import ISMCTSLearnedAI
+from src.game.ai_ismcts_mlp import ISMCTSMLPAI
 from src.game.engine import Engine
 from src.game import protocols as Protocols
 from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO, PROTOCOL_TAGLINE, PROTOCOL_VERBS
@@ -295,8 +296,8 @@ def new_game():
     data = request.get_json(force=True) or {}
     mode = data.get("mode", "hotseat")  # "hotseat" | "vs_ai"
     ai_side = data.get("aiSide", 2)
-    # "random"(왕초보) | "heuristic"(초보) | "ismcts"(중급). 모르는 값이
-    # 오면 안전하게 랜덤.
+    # "random"(왕초보) | "heuristic"(초보) | "ismcts"(중급) |
+    # "ismcts_mlp"(고급). 모르는 값이 오면 안전하게 랜덤.
     ai_difficulty = data.get("aiDifficulty", "random")
     first_player = data.get("firstPlayer", random.choice([1, 2]))
 
@@ -309,6 +310,8 @@ def new_game():
     ai2 = mode == "vs_ai" and ai_side == 2
 
     def make_ai_module():
+        if ai_difficulty == "ismcts_mlp":
+            return ISMCTSMLPAI()
         if ai_difficulty == "ismcts":
             return ISMCTSLearnedAI()
         if ai_difficulty == "heuristic":

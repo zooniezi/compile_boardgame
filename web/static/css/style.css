@@ -197,6 +197,10 @@ button {
   grid-template-columns: 1fr 1fr 1fr;
 }
 
+.mode-select.four {
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+
 .mode-select.set-select {
   grid-template-columns: repeat(3, 1fr);
   margin-top: 10px;

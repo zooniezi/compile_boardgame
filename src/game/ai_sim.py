@@ -181,6 +181,55 @@ def evaluate_learned(g, pi, w=None):
     return float(np.dot(coef, x) + intercept)
 
 
+_mlp_weights_cache = {}
+
+
+def load_mlp_weights(path):
+    """scripts/train_eval_mlp.py가 저장한 .npz(layer{i}_w/layer{i}_b,
+    n_layers)를 읽어 evaluate_learned_mlp()의 eval_w로 바로 넘길 수 있는
+    [(w, b), ...] 리스트로 반환한다(층 순서대로). 같은 경로는 캐시해서
+    반복 로드를 피한다(load_eval_weights()와 동일한 패턴)."""
+    if path not in _mlp_weights_cache:
+        d = np.load(path)
+        n = int(d["n_layers"])
+        layers = [(d[f"layer{i}_w"], d[f"layer{i}_b"]) for i in range(n)]
+        _mlp_weights_cache[path] = layers
+    return _mlp_weights_cache[path]
+
+
+def _relu(x):
+    return np.maximum(x, 0.0)
+
+
+def evaluate_learned_mlp(g, pi, w=None):
+    """소형 MLP의 순방향 계산 -- sklearn 없이 순수 numpy로 재현한다(런타임
+    쪽에 새 의존성을 추가하지 않기 위해, 학습은 sklearn MLPClassifier로
+    하되 학습이 끝난 가중치 행렬만 뽑아 여기서 손으로 재구현).
+
+    evaluate_learned()와 계약 동일: 승부가 이미 결정났으면 ±1e6, 아니면
+    압축 안 된 스칼라(마지막 층의 선형결합, 시그모이드 적용 전) --
+    ai_ismcts.py의 tanh(score/eval_scale) 정규화가 이미 자체 압축을
+    하므로 여기서 확률(0~1)로 눌러서 넘기면 신호가 뭉개진다.
+
+    w는 반드시 load_mlp_weights()가 반환한 [(w, b), ...] 리스트여야 한다.
+    activation은 "relu"로 고정(train_eval_mlp.py의 학습 설정과 반드시
+    일치해야 함 -- 다르면 조용히 틀린 값을 계산한다)."""
+    if w is None:
+        raise ValueError(
+            "evaluate_learned_mlp은 eval_w=load_mlp_weights(path)와 함께 써야 함")
+    if g.winner == pi:
+        return 1e6
+    if g.winner:
+        return -1e6
+    x = np.asarray(extract(g, pi), dtype=np.float64)
+    n_layers = len(w)
+    for i, (weight, bias) in enumerate(w):
+        x = x @ weight + bias
+        if i < n_layers - 1:   # 마지막 층 전까지만 ReLU (sklearn 기본 activation)
+            x = _relu(x)
+    return float(x[0])
+
+
 # ---------------------------------------------------------------------------
 # 플레이아웃 -- 후보 액션 하나를 적용하고 pi의 턴 끝까지 resolve
 # ---------------------------------------------------------------------------

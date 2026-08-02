@@ -50,7 +50,7 @@
     <div id="setup-rest" class="hidden">
       <div id="ai-difficulty-block" class="hidden">
         <p class="setup-step-label">AI 난이도는요?</p>
-        <div class="mode-select three">
+        <div class="mode-select four">
           <button class="mode-btn" data-difficulty="random">
             <span class="mode-title">왕초보</span>
             <span class="mode-desc">완전 무작위</span>
@@ -62,6 +62,10 @@
           <button class="mode-btn" data-difficulty="ismcts">
             <span class="mode-title">중급</span>
             <span class="mode-desc">몇 수 앞을 내다보며 판단함 (턴당 1~2초 소요)</span>
+          </button>
+          <button class="mode-btn" data-difficulty="ismcts_mlp">
+            <span class="mode-title">고급</span>
+            <span class="mode-desc">행동 결정에 단순한 신경망 사용 (턴당 1~2초 소요)</span>
           </button>
         </div>
       </div>
