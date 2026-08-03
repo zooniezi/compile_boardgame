@@ -784,6 +784,15 @@ button {
 
 .board-card .card-band-empty::before { opacity: 0.3; }
 
+/* 카드 텍스트의 "조건: 효과" 형태에서 콜론 앞 조건 라벨(예: "시작:",
+   "이 카드가 가려질 때:")을 강조 -- 보드 카드/카드 정보 패널/코덱스가
+   전부 이 클래스를 공유한다(formatCardLine, app.js). */
+.ct-trigger {
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .board-card.face-down {
   background: repeating-linear-gradient(135deg, #171b26, #171b26 4px, #1c202c 4px, #1c202c 8px);
 }

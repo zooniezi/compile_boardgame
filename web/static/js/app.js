@@ -327,6 +327,13 @@ async function startGame(mode, draftedProtocols) {
   $("#play-setup-screen").classList.add("hidden");
   $("#draft-screen").classList.add("hidden");
   $("#game-screen").classList.remove("hidden");
+  // 밴픽이 끝나 이 게임이 시작된 뒤로는 그 밴픽 상태를 더 들고 있을 이유가
+  // 없다 -- 지워두지 않으면 테마 전환(setTheme)의 "if (lastDraftState)
+  // renderDraft(lastDraftState)"가 이 오래된 "밴픽 완료(state.done)" 상태를
+  // 다시 처리해서, renderDraft 안의 자동시작 로직이 매번 새로 발동해
+  // 게임 중에 테마를 바꿀 때마다 같은 프로토콜로 새 게임이 또 시작되는
+  // 버그가 있었다.
+  lastDraftState = null;
   handleState(data.state, requestSeq);
 }
 
@@ -367,6 +374,7 @@ async function startDraft(mode, sets) {
   });
   const data = await res.json();
   draftId = data.draftId;
+  draftAutoStartQueued = false;
   $("#setup-screen").classList.add("hidden");
   $("#play-setup-screen").classList.add("hidden");
   $("#draft-screen").classList.remove("hidden");
@@ -388,6 +396,8 @@ $("#draft-randomize-btn").addEventListener("click", async () => {
   const data = await res.json();
   renderDraft(data);
 });
+
+let draftAutoStartQueued = false; // 밴픽 완료 -> startGame 자동전환이 중복 발동하지 않게
 
 function renderDraft(state) {
   lastDraftState = state;
@@ -427,7 +437,8 @@ function renderDraft(state) {
     poolEl.appendChild(renderDraftCard(protoId, cur, status));
   });
 
-  if (state.done) {
+  if (state.done && !draftAutoStartQueued) {
+    draftAutoStartQueued = true;
     sleep(500).then(() => startGame(draftGameMode, state.result));
   }
 }
@@ -1073,9 +1084,22 @@ function isChooseCardCandidate(state, card) {
   return (req.candidates || []).includes(card.uid);
 }
 
+// 카드 텍스트 한 줄이 "조건: 효과"(예: "시작:", "이 카드가 가려질 때:")
+// 형태면, 맨 처음 콜론 앞부분(조건 라벨)만 굵게+밑줄로 강조한다 -- 실제
+// 효과 문장과 한눈에 구분되게. 콜론이 없는 줄(조건 없는 일반 효과)은
+// 그대로 둔다.
+function formatCardLine(line) {
+  const idx = line.indexOf(":");
+  if (idx === -1) return line;
+  // 원문에 콜론 뒤 공백이 있든 없든 항상 정확히 한 칸 띄운다(원본 문자열의
+  // 공백 유무에 기대지 않고 직접 넣는다).
+  const rest = line.slice(idx + 1).replace(/^\s+/, "");
+  return `<span class="ct-trigger">${line.slice(0, idx)}</span>:&nbsp;${rest}`;
+}
+
 function bandHtml(kind, lines) {
   if (lines && lines.length) {
-    return `<div class="card-body card-band-${kind}">${lines.join(" ")}</div>`;
+    return `<div class="card-body card-band-${kind}">${lines.map(formatCardLine).join(" ")}</div>`;
   }
   return `<div class="card-body card-band-${kind} card-band-empty"></div>`;
 }
@@ -1234,7 +1258,7 @@ function cardInfoInnerHtml(card) {
   </div>`;
   ["top", "mid", "bot"].forEach((z) => {
     if (text[z] && text[z].length) {
-      html += `<div class="ci-band" style="--ci-accent:${accent}">${text[z].join(" ")}</div>`;
+      html += `<div class="ci-band" style="--ci-accent:${accent}">${text[z].map(formatCardLine).join(" ")}</div>`;
     } else {
       html += `<div class="ci-band-empty"></div>`;
     }
@@ -2034,7 +2058,7 @@ function renderCodexCard(protoId, value, accent) {
   let bands = "";
   ["top", "mid", "bot"].forEach((z) => {
     if (text[z] && text[z].length) {
-      bands += `<div class="cc-band">${text[z].join(" ")}</div>`;
+      bands += `<div class="cc-band">${text[z].map(formatCardLine).join(" ")}</div>`;
     } else {
       bands += `<div class="cc-band cc-band-empty"></div>`;
     }
