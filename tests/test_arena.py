@@ -7,6 +7,8 @@
 from scripts.arena import arena, play_one
 from src.game.ai_random import RandomAI
 
+import pytest
+
 
 class LazyAI(RandomAI):
     """일부러 약한 AI: 낼 수 있어도 항상 리프레시만 해서 보드에 값을 못 쌓는다."""
@@ -43,3 +45,27 @@ def test_arena_detects_a_known_skill_gap():
     """알려진 실력차를 실제로 잡아내는지 (도구가 무딘지 확인)."""
     r = arena(RandomAI, LazyAI, n_pairs=5, progress=False)
     assert r["rate"] > 0.8
+
+
+# ---------------------------------------------------------------------------
+# 병렬 실행 (260803_병렬화_plan.md) -- 게임이 결정론적이므로 n_workers를
+# 바꿔도 결과가 통계적으로 "비슷"한 게 아니라 승/패/무 집계까지 정확히
+# 같아야 한다(쌍 목록을 병렬 분기 전에 먼저 순차로 뽑아두는 설계 덕분).
+# ---------------------------------------------------------------------------
+
+def test_arena_parallel_matches_sequential_exactly():
+    kwargs = dict(n_pairs=4, seed0=11, progress=False)
+    seq = arena(RandomAI, LazyAI, **kwargs, n_workers=1)
+    par = arena(RandomAI, LazyAI, **kwargs, n_workers=2)
+    assert par["wins_a"] == seq["wins_a"]
+    assert par["wins_b"] == seq["wins_b"]
+    assert par["draws"] == seq["draws"]
+    assert par["rate"] == seq["rate"]
+    assert par["ci"] == seq["ci"]
+
+
+def test_arena_rejects_unpicklable_factory_with_clear_error():
+    """람다는 Windows multiprocessing(spawn)에서 워커로 못 넘어간다 --
+    스폰 후 알 수 없는 에러 대신 여기서 미리 명확하게 걸려야 한다."""
+    with pytest.raises(TypeError, match="피클"):
+        arena(lambda: RandomAI(), LazyAI, n_pairs=2, progress=False, n_workers=2)

@@ -29,6 +29,7 @@ backpropagate를 한 번 수행한다.
 """
 
 import math
+import random
 
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_sim import determinize, evaluate, DECLINE
@@ -246,8 +247,23 @@ def _select_ucb1(node, sim, keys, pi0, c_ucb):
     return best_key
 
 
+def _dirichlet_noise(n, alpha, rng_draw):
+    """rng_draw(m) -- 1..m 정수를 뽑는 콜러블(sim.aux_rng 계약)을 시드로
+    삼아 Dirichlet(alpha) 표본 n개를 만든다. 감마(alpha, 1) 표본 n개를
+    뽑아 합으로 나누면 Dirichlet(alpha,...,alpha) 표본이 된다는 표준
+    관계를 쓴다(numpy.random.dirichlet 없이, 게임 메커니즘 스트림과
+    무관한 aux_rng 계약을 그대로 재사용하기 위함)."""
+    r = random.Random(rng_draw(2 ** 30))
+    gammas = [r.gammavariate(alpha, 1.0) for _ in range(n)]
+    total = sum(gammas)
+    if total <= 0:
+        return [1.0 / n] * n
+    return [g / total for g in gammas]
+
+
 def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
-                  uniform_mix=_POLICY_UNIFORM_MIX):
+                  uniform_mix=_POLICY_UNIFORM_MIX,
+                  root_dirichlet_alpha=None, root_dirichlet_eps=0.25):
     """루트 노드 전용 선택 규칙 -- "학습된 루트 정책"이라는 이름 그대로,
     트리 안 깊은 노드는 여전히 `_select_ucb1`을 쓰고 이 함수는 루트에서만
     호출된다.
@@ -260,7 +276,14 @@ def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
 
     `_select_ucb1`과 달리 "미방문 우선" 규칙이 없다 -- PUCT의 U항 자체가
     n=0일 때 분모가 1이라 자연히 큰 보너스를 줘서 미방문 후보를 우대하므로
-    별도 처리가 필요 없다."""
+    별도 처리가 필요 없다.
+
+    root_dirichlet_alpha(기본 None=끔): 자기대국 데이터 생성 전용 탐험
+    노이즈(260803_RL_plan.md). 값을 주면 사전확률을
+    `(1-eps)*P(a) + eps*Dirichlet(alpha)`로 섞는다 -- 매 자기대국이
+    학습된 정책이 가장 선호하는 수순으로만 수렴해서 다양성을 잃는 걸
+    막는다. 경쟁 플레이(`decide()`)에서는 절대 켜지 않는 옵트인
+    파라미터라 기본 동작(None)은 이전과 완전히 동일하다."""
     if not keys:
         return None
     scores = action_scores(sim, node.chooser, cands, policy_w)
@@ -272,6 +295,12 @@ def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
         k: (1 - uniform_mix) * (e / total_exp) + uniform_mix / n_cand
         for k, e in zip(keys, exp)
     }
+    if root_dirichlet_alpha is not None:
+        noise = _dirichlet_noise(len(keys), root_dirichlet_alpha, sim.aux_rng)
+        prior = {
+            k: (1 - root_dirichlet_eps) * prior[k] + root_dirichlet_eps * eps_k
+            for k, eps_k in zip(keys, noise)
+        }
 
     sign = 1.0 if node.chooser == pi0 else -1.0
     # max(1, ...): 첫 방문(전체 N=0)일 때 분자를 0으로 두면 모든 후보의
@@ -290,6 +319,50 @@ def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
     return best_key
 
 
+def _legibility(g, pi0, action):
+    """루트 답변 하나의 "가독성" 점수(높을수록 더 읽기 쉬운 수) -- 얼굴이
+    보이는가(2점) + 이미 컴파일된 내 라인(죽은 라인)이 아닌가(1점)를 더한
+    0~3 스케일. `_search()`의 legibility 동점 처리(아래) 전용.
+
+    'dead'는 "내가 이미 컴파일해서 더는 컴파일할 수 없는 내 라인에
+    (뒷면으로) 얹는 수"만 가리킨다 -- 상대 라인에 얹는 수(action["side"]가
+    설정됨)는 그 라인이 몇 번 컴파일됐든 dead로 치지 않는다(상대 라인은
+    거부/봉쇄 목적이 있을 수 있어 무조건 나쁜 수가 아니기 때문)."""
+    line = action.get("line")
+    dead = bool(line) and g.players[pi0]["compiled"][line] and not action.get("side")
+    return (2 if action.get("faceUp") else 0) + (0 if dead else 1)
+
+
+def _apply_legibility_tiebreak(g, pi0, root, best_key, legible_eps):
+    """`_search()`의 마지막 단계 -- 최다방문 답변(best_key)이 legible_eps
+    조건을 만족하는 다른 play 후보로 바뀔 수 있는지 검사해 최종 답변
+    키를 반환한다. best_key가 play 액션이 아니거나 legible_eps가 None
+    이면 그대로 best_key를 반환(무동작)한다.
+
+    루트 가독성 동점 처리 -- 방문수가
+    `best_n*0.6` 이상이고 평균값(Q)이 best_q-eps 이내인 play 후보들
+    중에서만, `_legibility()` 점수가 더 높은(동점이면 Q가 더 높은) 쪽을
+    고른다. 진짜 가치 차이(Q gap > eps)가 있는 후보는 후보군에도 안
+    들어가므로 절대 안 바뀐다."""
+    best = root.answer_of[best_key]
+    if (legible_eps is None or not isinstance(best, dict)
+            or best.get("kind") != "play"):
+        return best_key
+    best_n = root.N[best_key]
+    best_q = root.W[best_key] / best_n
+    pick_key, pick_l, pick_q = best_key, _legibility(g, pi0, best), best_q
+    for k, n in root.N.items():
+        val = root.answer_of[k]
+        if (n >= best_n * 0.6 and isinstance(val, dict)
+                and val.get("kind") == "play"):
+            q = root.W[k] / n
+            if q >= best_q - legible_eps:
+                l = _legibility(g, pi0, val)
+                if l > pick_l or (l == pick_l and q > pick_q):
+                    pick_key, pick_l, pick_q = k, l, q
+    return pick_key
+
+
 def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
     """항상 pi0 시점 스칼라. 이 엔진에 무승부는 없다(resolve_stalemate가
     끝까지 동률이면 승자를 강제 배정) -- sim.winner가 None이면 그건
@@ -305,7 +378,8 @@ def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
 
 def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
                     nodes, rollout_policy, c_ucb, horizon_turn,
-                    eval_fn, eval_w, eval_scale, salt):
+                    eval_fn, eval_w, eval_scale, salt,
+                    root_dirichlet_alpha=None, root_dirichlet_eps=0.25):
     """ISMCTS 반복 한 번: select(트리를 따라 UCB로 내려가다가 처음 보는
     정보집합에서 expand) -> rollout(그 뒤로는 rollout_policy가 흘려보냄)을
     한 방 루프로 수행한다. `in_tree` 플래그로 "아직 트리 안"과 "확장 후
@@ -363,7 +437,8 @@ def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
                     keys.append(k)
                 if policy_w is not None and key == root_key:
                     chosen_key = _select_puct(node, sim, keys, cands, pi0, c_ucb,
-                                               policy_w, policy_uniform_mix)
+                                               policy_w, policy_uniform_mix,
+                                               root_dirichlet_alpha, root_dirichlet_eps)
                 else:
                     chosen_key = _select_ucb1(node, sim, keys, pi0, c_ucb)
                 chosen_val = node.answer_of[chosen_key]
@@ -381,7 +456,9 @@ def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
 
 def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
             rollout_turn_cap, eval_fn, eval_w, eval_scale,
-            policy_w=None, policy_uniform_mix=_POLICY_UNIFORM_MIX):
+            policy_w=None, policy_uniform_mix=_POLICY_UNIFORM_MIX,
+            root_dirichlet_alpha=None, root_dirichlet_eps=0.25,
+            return_root=False, legible_eps=None):
     """ISMCTS 본체. 성공하면 legal_actions(pi0)의 원소 하나를 반환하고,
     시뮬레이션이 불가능하면(시드 없음 등) None을 반환한다 -- 호출자는
     이 경우 휴리스틱 채점으로 폴백해야 한다.
@@ -389,7 +466,24 @@ def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
     policy_w(ai_ismcts_policy.load_policy_weights()의 반환값)가 주어지면
     루트 노드(root_key)의 선택에만 `_select_puct`(학습된 정책 사전확률 +
     PUCT)를 쓰고, 트리의 나머지 노드는 여전히 `_select_ucb1`이다 --
-    "루트 정책"이라는 이름 그대로 루트에만 적용된다."""
+    "루트 정책"이라는 이름 그대로 루트에만 적용된다.
+
+    root_dirichlet_alpha/eps: `_select_puct`로 그대로 전달되는 자기대국
+    전용 탐험 노이즈(기본 None=끔, 260803_RL_plan.md).
+
+    return_root=True면 `(best_answer, root_node)` 튜플을 반환한다 --
+    `root_node.N`(answer_key -> 방문횟수)이 자기대국 데이터 생성 시
+    정책 학습 라벨(방문분포)의 원천이 된다(`ISMCTSAI.decide_with_stats()`
+    참고). 기본값 False면 예전처럼 `best_answer` 하나만 반환(하위 호환).
+
+    legible_eps(기본 None=끔): 루트 답변이 "play" 액션일 때만 적용되는
+    가독성 동점 처리. 방문수
+    최다 후보(best)와 평균값(Q)이 `eps` 이내로 붙어 있고 방문수도
+    `best_n*0.6` 이상인 다른 play 후보들 중, `_legibility()` 점수(얼굴
+    보임 > 얼굴 안 보임, 살아있는 라인 > 이미 컴파일한 내 라인)가 더 높은
+    쪽으로 최종 답을 바꾼다 -- 방문수 차이가 진짜 가치 차이가 아니라
+    탐색 잡음일 때, 사람이 보기에 더 "말이 되는" 수를 고르게 한다. 진짜
+    가치 차이(eps보다 큰 격차)가 있는 후보는 건드리지 않는다."""
     if iterations <= 0:
         return None
     root_key = _node_key(g, root_req, pi0)
@@ -400,7 +494,9 @@ def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
     for i in range(iterations):
         path, value = _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
                                       nodes, rollout_policy, c_ucb,
-                                      horizon_turn, eval_fn, eval_w, eval_scale, salt=i)
+                                      horizon_turn, eval_fn, eval_w, eval_scale, salt=i,
+                                      root_dirichlet_alpha=root_dirichlet_alpha,
+                                      root_dirichlet_eps=root_dirichlet_eps)
         if path is None:
             return None  # 클론 불가(시드 없음 등) -- 호출자가 휴리스틱으로 폴백
         for n, k in reversed(path):
@@ -411,7 +507,11 @@ def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
     if not root.N:
         return None
     best_key = max(root.N, key=lambda k: root.N[k])
-    return root.answer_of[best_key]
+    best = root.answer_of[best_key]
+
+    best_key = _apply_legibility_tiebreak(g, pi0, root, best_key, legible_eps)
+    best = root.answer_of[best_key]
+    return (best, root) if return_root else best
 
 
 class ISMCTSAI(HeuristicAI):
@@ -450,12 +550,36 @@ class ISMCTSAI(HeuristicAI):
     policy_w(3단계, 2026-08-03): scripts/train_policy.py로 학습한 "루트
     정책"(ai_ismcts_policy.load_policy_weights()의 반환값)을 주면 루트
     노드의 후보 선택에 `_select_puct`(PUCT + 학습된 사전확률)를 쓴다.
-    None이면(기본값) 예전처럼 루트도 순수 UCB1 -- 하위 호환."""
+    None이면(기본값) 예전처럼 루트도 순수 UCB1 -- 하위 호환.
+
+    root_dirichlet_alpha/eps(RL, 260803_RL_plan.md): `decide_with_stats()`
+    가 자기대국 데이터를 생성할 때만 켜는 탐험 노이즈. `decide()`(경쟁
+    플레이, 아레나, 웹 서비스)는 이 값을 안 쓴다 -- 기본값 그대로 둬도
+    무해하지만, 실수로 켜둔 채 경쟁 플레이에 쓰지 않도록 `decide()`
+    자체는 항상 노이즈 없이 호출한다.
+
+    legible_eps(기본 None=끔): `decide()`와 `decide_with_stats()` 둘 다에
+    적용되는 루트 가독성 동점 처리(`_search()` 참고) -- Dirichlet
+    노이즈와 달리 경쟁 플레이용 기능이라 `decide()`에서도 그대로 켜진다.
+    이 클래스 자체의 기본값은 None(하위 호환)이고, "고급" 프리셋
+    (`ISMCTSMLPAI`)에서 0.04를 기본으로 켠다.
+
+    rearrange_iterations(기본 None=끔): `planRearrange()`를 휴리스틱
+    즉답(`HeuristicAI.plan_rearrange`) 대신 전용 서브 탐색으로 대체한다
+    -- Control 소비(컴파일/리프레시) 시 "포기 + 양쪽 플레이어의 모든
+    단일 라인 스왑"(7개 후보, `_candidates_for`의 `planRearrange` 분기와
+    동일)을 실제로 몇 수 앞까지 시뮬레이션해보고 고른다. `_search()`를
+    그대로 재사용하되 `policy_w=None`으로 호출한다 -- 이 서브탐색엔
+    학습된 루트 정책을 안 쓰고 순수 UCB1만 쓴다. None이면(기본값)
+    예전처럼 `HeuristicAI.planRearrange`(단일 휴리스틱 규칙)를 그대로
+    상속 -- 하위 호환. 값을 주면 그 값을 서브탐색 iterations로 쓴다."""
 
     def __init__(self, iterations=200, c_ucb=1.41, rollout_policy=None,
                  rollout_turn_cap=2, eval_fn=evaluate, eval_w=None,
                  eval_scale=200.0, policy_w=None,
-                 policy_uniform_mix=_POLICY_UNIFORM_MIX):
+                 policy_uniform_mix=_POLICY_UNIFORM_MIX,
+                 root_dirichlet_alpha=None, root_dirichlet_eps=0.25,
+                 legible_eps=None, rearrange_iterations=None):
         self.iterations = iterations
         self.c_ucb = c_ucb
         # 롤아웃/선택 단계의 하위 결정을 대신 답하는 정책. 절대 self(또는
@@ -469,6 +593,10 @@ class ISMCTSAI(HeuristicAI):
         self.eval_scale = eval_scale
         self.policy_w = policy_w
         self.policy_uniform_mix = policy_uniform_mix
+        self.root_dirichlet_alpha = root_dirichlet_alpha
+        self.root_dirichlet_eps = root_dirichlet_eps
+        self.legible_eps = legible_eps
+        self.rearrange_iterations = rearrange_iterations
 
     def decide(self, g, req):
         if req.get("type") == "action":
@@ -479,15 +607,65 @@ class ISMCTSAI(HeuristicAI):
             best = _search(g, pi0, req, self.iterations, self.c_ucb,
                             self.rollout_policy, self.rollout_turn_cap,
                             self.eval_fn, self.eval_w, self.eval_scale,
-                            self.policy_w, self.policy_uniform_mix)
+                            self.policy_w, self.policy_uniform_mix,
+                            legible_eps=self.legible_eps)
             if best is not None:
                 return best
             # 클론 불가(시드 없음) 등 -- 안전하게 휴리스틱 채점으로 폴백
         return super().decide(g, req)
 
-    # planRearrange(g, pi, compiling_line)는 HeuristicAI(ai_prior.plan_rearrange)
-    # 구현을 그대로 상속한다 -- spend_control이 프롬프트를 거치지 않고
-    # 직접 호출하는 별도 경로라, 하위 결정 트리 편입(2026-08-03)의 범위
-    # 밖이다. cloneAtDecision의 planRearrange 스탠드인(합성 프롬프트)만
-    # 트리에서 다뤄지고, 실제 라이브 매치의 이 호출 경로 자체는 여전히
-    # 휴리스틱이다.
+    def decide_with_stats(self, g, req):
+        """`decide()`와 계약은 같지만(action 프롬프트만), 루트 노드의
+        방문분포까지 같이 반환한다 -- 자기대국 데이터 생성 전용
+        (260803_RL_plan.md). `decide()`는 무수정으로 그대로 둔다.
+
+        반환: (chosen_action, [(action, visit_count), ...]). action이
+        dict라 딕셔너리 키로 못 쓰므로 튜플 리스트로 준다. 후보가
+        하나뿐이거나(선택의 여지 없음) 클론이 불가능하면 그 액션
+        하나짜리 자명한 분포로 폴백한다 -- 실제 탐색이 없었으므로 방문
+        분포도 의미가 없기 때문."""
+        pi0 = req["chooser"]
+        acts = g.legal_actions(pi0)
+        if len(acts) <= 1:
+            only = acts[0] if acts else None
+            return only, ([(only, 1)] if only is not None else [])
+        result = _search(g, pi0, req, self.iterations, self.c_ucb,
+                          self.rollout_policy, self.rollout_turn_cap,
+                          self.eval_fn, self.eval_w, self.eval_scale,
+                          self.policy_w, self.policy_uniform_mix,
+                          root_dirichlet_alpha=self.root_dirichlet_alpha,
+                          root_dirichlet_eps=self.root_dirichlet_eps,
+                          return_root=True, legible_eps=self.legible_eps)
+        if result is None:
+            # 클론 불가(시드 없음) 등 -- 휴리스틱 채점으로 폴백, 방문
+            # 분포는 그 하나짜리 자명한 분포로.
+            chosen = super().decide(g, req)
+            return chosen, [(chosen, 1)]
+        best, root = result
+        visits = [(root.answer_of[k], n) for k, n in root.N.items()]
+        return best, visits
+
+    def planRearrange(self, g, pi, compiling_line):
+        """Control 소비(컴파일/리프레시) 시 재배치 계획 -- 재배치 서브탐색
+        (4단계, 260804). `rearrange_iterations`가 None이면(기본)
+        `HeuristicAI.planRearrange`(단일 규칙)를 그대로 상속한 것과
+        동일하게 동작한다.
+
+        spend_control()은 prompt()를 거치지 않고 이 메서드를 동기적으로
+        직접 호출한다(`engine.py:spend_control`) -- 그 시점에 이 결정은
+        아직 `g.answer_log`에 없으므로, 여기서 `g.clone_at_decision()`을
+        부르면 클론이 정확히 이 결정 지점(합성 `planRearrange` 프롬프트,
+        `_candidates_for`가 이미 이해하는 모양)에서 멈춘다 -- `_search()`를
+        그대로 재사용할 수 있는 이유. `policy_w`는 일부러 안 넘긴다 --
+        이 서브탐색엔 학습된 루트 정책 없이 순수 UCB1만 쓴다."""
+        if self.rearrange_iterations is None:
+            return super().planRearrange(g, pi, compiling_line)
+        root_req = {"type": "planRearrange", "chooser": pi,
+                     "compilingLine": compiling_line}
+        best = _search(g, pi, root_req, self.rearrange_iterations, self.c_ucb,
+                        self.rollout_policy, self.rollout_turn_cap,
+                        self.eval_fn, self.eval_w, self.eval_scale)
+        if best is None:
+            # 클론 불가(시드 없음) 등 -- 안전하게 휴리스틱으로 폴백
+            return super().planRearrange(g, pi, compiling_line)
+        return None if best is DECLINE else best

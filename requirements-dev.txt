@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8.0
+scikit-learn>=1.6
+torch>=2.8

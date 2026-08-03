@@ -12,7 +12,10 @@ import threading
 from src.game.engine import Engine
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_ismcts import ISMCTSAI
-from src.game.ai_ismcts_mlp import ISMCTSMLPAI, DEFAULT_MLP_WEIGHTS_PATH, DEFAULT_MLP_EVAL_SCALE
+from src.game.ai_ismcts_mlp import (
+    ISMCTSMLPAI, DEFAULT_MLP_WEIGHTS_PATH, DEFAULT_MLP_EVAL_SCALE, DEFAULT_LEGIBLE_EPS,
+    DEFAULT_REARRANGE_ITERATIONS,
+)
 from src.game.ai_sim import evaluate, evaluate_learned_mlp, load_mlp_weights
 
 PROTOS1 = ["Water", "Fire", "Life"]
@@ -69,6 +72,36 @@ def test_full_game_runs_without_error():
     e = _driven_engine(seed=2024, ai_modules={1: ai, 2: HeuristicAI()})
     assert e.error is None
     assert e.winner in (1, 2)
+
+
+def test_default_construction_wires_legibility_tiebreak():
+    """루트 가독성 동점 처리(legible_eps=0.04)를 이 프리셋만 기본으로
+    켠다 -- ISMCTSAI 자체(중급/손튜닝)는 여전히 None(꺼짐)."""
+    ai = ISMCTSMLPAI(iterations=1)
+    assert ai.legible_eps == DEFAULT_LEGIBLE_EPS == 0.04
+    assert ISMCTSAI(iterations=1).legible_eps is None
+
+
+def test_legible_eps_remains_overridable():
+    ai = ISMCTSMLPAI(iterations=1, legible_eps=None)
+    assert ai.legible_eps is None
+    ai2 = ISMCTSMLPAI(iterations=1, legible_eps=0.1)
+    assert ai2.legible_eps == 0.1
+
+
+def test_default_construction_wires_rearrange_search():
+    """Control 재배치 서브탐색을 이 프리셋만 기본으로 켠다 --
+    ISMCTSAI 자체(중급/손튜닝)는 여전히 None(휴리스틱 즉답)."""
+    ai = ISMCTSMLPAI(iterations=1)
+    assert ai.rearrange_iterations == DEFAULT_REARRANGE_ITERATIONS == 80
+    assert ISMCTSAI(iterations=1).rearrange_iterations is None
+
+
+def test_rearrange_iterations_remains_overridable():
+    ai = ISMCTSMLPAI(iterations=1, rearrange_iterations=None)
+    assert ai.rearrange_iterations is None
+    ai2 = ISMCTSMLPAI(iterations=1, rearrange_iterations=30)
+    assert ai2.rearrange_iterations == 30
 
 
 def test_decide_does_not_leak_threads():

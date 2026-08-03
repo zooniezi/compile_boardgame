@@ -536,3 +536,410 @@ def test_ismcts_with_policy_w_none_is_unaffected_baseline():
     finally:
         ai_ismcts_module._select_puct = orig_puct
     assert puct_calls == []
+
+
+# ---------------------------------------------------------------------------
+# 13. decide_with_stats() / 디리클레 탐험 노이즈 -- 진짜 RL(260803_RL_plan.md)
+#     의 자기대국 데이터 생성이 쓸 방문분포 노출 경로. decide()(경쟁 플레이,
+#     아레나, 웹 서비스)는 이 배치로 전혀 건드리지 않는다는 게 핵심 불변식.
+# ---------------------------------------------------------------------------
+
+from src.game.ai_ismcts import _dirichlet_noise, _search  # noqa: E402
+
+
+def test_decide_with_stats_visit_counts_sum_to_iterations_and_cover_legal_actions():
+    """루트에서 벗어난 반복이 없다면(클론 실패 없음) 루트 자식들의 방문
+    횟수 합은 정확히 iterations와 같아야 한다 -- 반복마다 정확히 한 번씩
+    루트를 거치기 때문.
+
+    ai1=True/ai2=True로 돌리면 엔진이 결정을 내부에서 즉시
+    ai_module.decide()로 처리해버려서 바깥 pending 루프에는 "action"
+    요청이 노출되지 않는다(§11 test_sub_decision_branching_...와 동일한
+    함정) -- 그래서 감시용 래퍼(ai=)를 꽂아 엔진이 실제로 넘겨주는 살아있는
+    g/req로 decide_with_stats()를 호출해야 한다."""
+    result = {}
+
+    class _StatsSpyAI(ISMCTSAI):
+        def decide(self, g, req):
+            if "chosen" not in result and req.get("type") == "action" \
+                    and len(g.legal_actions(req["chooser"])) > 1:
+                chosen, visits = self.decide_with_stats(g, req)
+                result["chosen"] = chosen
+                result["visits"] = visits
+                result["legal"] = g.legal_actions(req["chooser"])
+            return super().decide(g, req)
+
+    for seed in range(5):
+        ai = _StatsSpyAI(iterations=30, rollout_turn_cap=4)
+        e = Engine(protocols1=PROTOS1, protocols2=PROTOS2, ai1=True, ai2=True,
+                   seed=seed, ai_modules={1: ai, 2: RandomAI()})
+        e.start()
+        n = 0
+        while e.pending is not None and n < 200 and "chosen" not in result:
+            n += 1
+            if e.pending["kind"] == "anim":
+                e.advance_anim()
+            else:
+                e.answer(None)
+        if "chosen" in result:
+            break
+
+    assert "chosen" in result, "5개 시드 동안 여러 후보가 있는 action 프롬프트를 못 만남"
+    assert result["chosen"] in result["legal"]
+    assert result["visits"]
+    assert all(v[0] in result["legal"] for v in result["visits"])
+    assert all(v[1] > 0 for v in result["visits"])
+    assert sum(v[1] for v in result["visits"]) == 30
+
+
+def test_decide_with_stats_falls_back_to_trivial_distribution_when_no_choice():
+    """후보가 하나(또는 0개)뿐이면 실제 탐색을 안 하므로 그 액션 하나짜리
+    자명한 분포를 반환해야 한다."""
+    class _OneActionGame:
+        def legal_actions(self, pi):
+            return [{"kind": "refresh"}]
+
+    ai = ISMCTSAI(iterations=10)
+    chosen, visits = ai.decide_with_stats(_OneActionGame(), {"chooser": 1, "type": "action"})
+    assert chosen == {"kind": "refresh"}
+    assert visits == [({"kind": "refresh"}, 1)]
+
+
+def test_dirichlet_noise_is_a_valid_probability_distribution():
+    noise = _dirichlet_noise(5, 0.3, lambda n: 1)  # 결정론적 시드로도 유효성만 확인
+    assert len(noise) == 5
+    assert all(x > 0 for x in noise)
+    assert abs(sum(noise) - 1.0) < 1e-9
+
+
+def test_root_dirichlet_noise_can_override_dominant_policy_preference():
+    """eps=1.0(사전확률을 노이즈로 완전히 대체)이면, 정책이 압도적으로
+    선호하는 후보라도 노이즈가 미는 쪽으로 뒤집힐 수 있어야 한다 --
+    노이즈 혼합 수식이 실제로 선택에 영향을 준다는 걸 확인(정책 점수는
+    몽키패치로 고정해서 신경망 없이 수식만 검증, §12와 동일 요령)."""
+    actions = _three_actions()[:2]
+    keys = [_answer_key(a) for a in actions]
+    node = _Node(chooser=1)
+    node.answer_of = dict(zip(keys, actions))
+
+    orig_scores = ai_ismcts_module.action_scores
+    orig_noise = ai_ismcts_module._dirichlet_noise
+    ai_ismcts_module.action_scores = lambda sim, pi, acts, w: [100.0, -100.0]  # A를 압도적으로 선호
+    ai_ismcts_module._dirichlet_noise = lambda n, alpha, rng: [0.01, 0.99]     # 노이즈는 B를 압도적으로 선호
+    try:
+        no_noise = ai_ismcts_module._select_puct(
+            node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41, policy_w=object(),
+            root_dirichlet_alpha=None)
+        full_noise = ai_ismcts_module._select_puct(
+            node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41, policy_w=object(),
+            root_dirichlet_alpha=0.3, root_dirichlet_eps=1.0)
+    finally:
+        ai_ismcts_module.action_scores = orig_scores
+        ai_ismcts_module._dirichlet_noise = orig_noise
+
+    assert no_noise == keys[0]
+    assert full_noise == keys[1]
+
+
+def test_search_return_root_is_opt_in_and_backward_compatible():
+    """return_root=False(기본값)면 예전처럼 답 하나만 반환 -- 시그니처
+    확장이 기존 호출부(ISMCTSAI.decide())에 영향 없음을 직접 확인.
+    (ai1=True/ai2=True 함정은 위 테스트와 동일 -- 감시 래퍼로 살아있는
+    g/req를 얻는다.)"""
+    result = {}
+
+    class _SearchSpyAI(RandomAI):
+        def decide(self, g, req):
+            if "done" not in result and req.get("type") == "action" \
+                    and len(g.legal_actions(req["chooser"])) > 1:
+                result["done"] = True
+                plain = _search(g, req["chooser"], req, 10, 1.41, HeuristicAI(), 4,
+                                 evaluate, None, 200.0)
+                with_root = _search(g, req["chooser"], req, 10, 1.41, HeuristicAI(), 4,
+                                     evaluate, None, 200.0, return_root=True)
+                result["plain_is_tuple"] = isinstance(plain, tuple)
+                result["with_root_ok"] = isinstance(with_root, tuple) and len(with_root) == 2
+            return super().decide(g, req)
+
+    for seed in range(5):
+        e = Engine(protocols1=PROTOS1, protocols2=PROTOS2, seed=seed,
+                   ai1=True, ai2=True, ai_modules={1: _SearchSpyAI(), 2: RandomAI()})
+        e.start()
+        n = 0
+        while e.pending is not None and n < 200 and "done" not in result:
+            n += 1
+            if e.pending["kind"] == "anim":
+                e.advance_anim()
+            else:
+                e.answer(None)
+        if "done" in result:
+            break
+
+    assert "done" in result, "5개 시드 동안 여러 후보가 있는 action 프롬프트를 못 만남"
+    assert result["plain_is_tuple"] is False
+    assert result["with_root_ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# 14. 루트 가독성(legibility) 동점 처리 -- "탐색이 통계적으로 동률로
+#     판단한 후보들 중에서는 라이브 라인 + 앞면을 우선한다"는 계획
+#     그대로: 방문수 차이가 진짜 가치 차이가 아니라 잡음일 때만 개입하고,
+#     진짜 격차(eps 밖)는 절대 건드리지 않는다.
+# ---------------------------------------------------------------------------
+
+from src.game.ai_ismcts import _legibility, _apply_legibility_tiebreak  # noqa: E402
+
+
+class _StubG:
+    """`_legibility()`가 필요로 하는 최소 인터페이스(players[pi]["compiled"])
+    만 흉내내는 가짜 게임 상태."""
+
+    def __init__(self, compiled_p1=None, compiled_p2=None):
+        self.players = {
+            1: {"compiled": compiled_p1 or {1: False, 2: False, 3: False}},
+            2: {"compiled": compiled_p2 or {1: False, 2: False, 3: False}},
+        }
+
+
+def test_legibility_scores_face_up_live_line_highest():
+    g = _StubG(compiled_p1={1: False, 2: True, 3: False})
+    face_up_live = {"kind": "play", "line": 1, "faceUp": True}
+    face_down_live = {"kind": "play", "line": 1, "faceUp": False}
+    face_up_dead = {"kind": "play", "line": 2, "faceUp": True}
+    face_down_dead = {"kind": "play", "line": 2, "faceUp": False}
+    assert _legibility(g, 1, face_up_live) == 3
+    assert _legibility(g, 1, face_down_live) == 1
+    assert _legibility(g, 1, face_up_dead) == 2
+    assert _legibility(g, 1, face_down_dead) == 0
+
+
+def test_legibility_ignores_compiled_status_when_playing_onto_opponent_side():
+    """상대 라인에 얹는 수(side가 설정됨)는 그 라인이 내 라인 기준으로
+    컴파일됐는지와 무관하게 dead 취급하지 않는다 -- side는 항상 상대를
+    가리키므로 "상대 라인에 얹는 수는 dead가 아니다"라는 조건이 항상
+    성립한다."""
+    g = _StubG(compiled_p1={1: True, 2: False, 3: False})
+    on_opp_side = {"kind": "play", "line": 1, "faceUp": True, "side": 2}
+    assert _legibility(g, 1, on_opp_side) == 3
+
+
+def _root_from(entries, chooser=1):
+    """entries: [(key, visits, mean_q, action_dict), ...] -> N/W/answer_of가
+    채워진 _Node."""
+    node = _Node(chooser=chooser)
+    for key, n, q, action in entries:
+        node.N[key] = n
+        node.W[key] = q * n
+        node.answer_of[key] = action
+    return node
+
+
+def test_tiebreak_is_noop_when_legible_eps_is_none():
+    g = _StubG()
+    root = _root_from([
+        ("A", 100, 0.5, {"kind": "play", "line": 1, "faceUp": False}),
+        ("B", 70, 0.5, {"kind": "play", "line": 1, "faceUp": True}),
+    ])
+    assert _apply_legibility_tiebreak(g, 1, root, "A", None) == "A"
+
+
+def test_tiebreak_is_noop_when_best_answer_is_not_a_play_action():
+    g = _StubG()
+    root = _root_from([
+        ("A", 100, 0.5, {"kind": "refresh"}),
+        ("B", 70, 0.5, {"kind": "play", "line": 1, "faceUp": True}),
+    ])
+    assert _apply_legibility_tiebreak(g, 1, root, "A", 0.05) == "A"
+
+
+def test_tiebreak_switches_to_more_legible_candidate_within_eps_and_visit_floor():
+    """A(최다방문, 뒷면/죽은 라인)와 Q가 거의 같고(eps 이내) 방문수도
+    충분한(>=60%) B(앞면/살아있는 라인)가 있으면 B로 바뀌어야 한다."""
+    g = _StubG(compiled_p1={1: False, 2: True, 3: False})
+    root = _root_from([
+        ("A", 100, 0.50, {"kind": "play", "line": 2, "faceUp": False}),  # legibility 0
+        ("B", 70, 0.49, {"kind": "play", "line": 1, "faceUp": True}),    # legibility 3
+    ])
+    assert _apply_legibility_tiebreak(g, 1, root, "A", 0.05) == "B"
+
+
+def test_tiebreak_respects_real_value_gap_outside_eps():
+    """B가 더 가독성 높아도 Q 격차가 eps보다 크면(진짜 가치 차이) A를
+    유지해야 한다."""
+    g = _StubG(compiled_p1={1: False, 2: True, 3: False})
+    root = _root_from([
+        ("A", 100, 0.50, {"kind": "play", "line": 2, "faceUp": False}),
+        ("B", 70, 0.40, {"kind": "play", "line": 1, "faceUp": True}),
+    ])
+    assert _apply_legibility_tiebreak(g, 1, root, "A", 0.05) == "A"
+
+
+def test_tiebreak_ignores_candidate_below_visit_floor():
+    """B가 eps 이내 + 더 가독성 높아도 방문수가 bestN*0.6 미만이면
+    (탐색이 충분히 검증하지 않은 후보) 무시해야 한다."""
+    g = _StubG(compiled_p1={1: False, 2: True, 3: False})
+    root = _root_from([
+        ("A", 100, 0.50, {"kind": "play", "line": 2, "faceUp": False}),
+        ("B", 59, 0.52, {"kind": "play", "line": 1, "faceUp": True}),
+    ])
+    assert _apply_legibility_tiebreak(g, 1, root, "A", 0.05) == "A"
+
+
+def test_tiebreak_prefers_higher_q_among_equal_legibility():
+    g = _StubG()
+    root = _root_from([
+        ("A", 100, 0.50, {"kind": "play", "line": 1, "faceUp": True}),
+        ("B", 90, 0.51, {"kind": "play", "line": 1, "faceUp": True}),
+    ])
+    assert _apply_legibility_tiebreak(g, 1, root, "A", 0.05) == "B"
+
+
+def test_legible_eps_default_none_leaves_decide_unaffected():
+    """ISMCTSAI 기본값(legible_eps=None)은 이 배치 이전과 동일하게
+    동작해야 한다 -- end-to-end로 한 판 굴려서 안 죽는지만 확인
+    (수치 검증은 위 단위 테스트들이 담당)."""
+    ai = ISMCTSAI(iterations=8, rollout_turn_cap=3)
+    assert ai.legible_eps is None
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2, ai1=True, ai2=True,
+               seed=11, ai_modules={1: ai, 2: RandomAI()})
+    e.start()
+    n = 0
+    while e.pending is not None and n < 20000:
+        n += 1
+        if e.pending["kind"] == "anim":
+            e.advance_anim()
+        else:
+            e.answer(None)
+    assert e.error is None
+
+
+def test_legible_eps_enabled_runs_full_game_without_error():
+    ai = ISMCTSAI(iterations=8, rollout_turn_cap=3, legible_eps=0.04)
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2, ai1=True, ai2=True,
+               seed=13, ai_modules={1: ai, 2: RandomAI()})
+    e.start()
+    n = 0
+    while e.pending is not None and n < 20000:
+        n += 1
+        if e.pending["kind"] == "anim":
+            e.advance_anim()
+        else:
+            e.answer(None)
+    assert e.error is None
+
+
+# ---------------------------------------------------------------------------
+# 15. Control 재배치(planRearrange) 서브탐색 (4단계, 260804).
+#     spend_control()이 prompt()를 거치지 않고 AI를 동기 직접호출하는
+#     별도 경로라서, 이 경로 자체가 살아있는 게임에서 실제로 발동하는지
+#     까지 확인한다(§8의 test_control_rearrange_path_does_not_crash와
+#     같은 우려).
+# ---------------------------------------------------------------------------
+
+def test_rearrange_iterations_none_delegates_to_heuristic_unchanged():
+    """기본값(None)은 이 배치 이전과 동일하게 HeuristicAI.planRearrange를
+    그대로 위임해야 한다 -- 새로 계산하는 게 아니라 진짜로 위임하는지
+    스텁으로 확인."""
+    orig = HeuristicAI.planRearrange
+    sentinel = {"who": 1, "order": {1: 2, 2: 1, 3: 3}}
+    HeuristicAI.planRearrange = lambda self, g, pi, compiling_line: sentinel
+    try:
+        ai = ISMCTSAI(iterations=8)
+        assert ai.rearrange_iterations is None
+        e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+        assert ai.planRearrange(e, 1, None) is sentinel
+    finally:
+        HeuristicAI.planRearrange = orig
+
+
+def test_rearrange_search_calls_search_with_synthetic_root_req_and_no_policy_w():
+    """`_search()`에 planRearrange 합성 프롬프트를 루트로 넘기고,
+    policy_w(학습된 루트 정책) 없이 순수 UCB1로 호출하는지 인자 자체를
+    캡처해서 확인한다."""
+    captured = {}
+
+    def fake_search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
+                     rollout_turn_cap, eval_fn, eval_w, eval_scale, *args, **kwargs):
+        captured["pi0"] = pi0
+        captured["root_req"] = root_req
+        captured["iterations"] = iterations
+        captured["extra_args"] = args
+        captured["extra_kwargs"] = kwargs
+        return DECLINE
+
+    orig = ai_ismcts_module._search
+    ai_ismcts_module._search = fake_search
+    try:
+        ai = ISMCTSAI(iterations=1, rearrange_iterations=7)
+        e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+        result = ai.planRearrange(e, 2, 3)
+    finally:
+        ai_ismcts_module._search = orig
+
+    assert captured["pi0"] == 2
+    assert captured["root_req"] == {"type": "planRearrange", "chooser": 2, "compilingLine": 3}
+    assert captured["iterations"] == 7
+    assert not captured["extra_args"] and not captured["extra_kwargs"]
+    assert result is None  # DECLINE -> None
+
+
+def test_rearrange_search_passes_through_a_chosen_plan():
+    plan = {"who": 2, "order": {1: 1, 2: 3, 3: 2}}
+    orig = ai_ismcts_module._search
+    ai_ismcts_module._search = lambda *a, **k: plan
+    try:
+        ai = ISMCTSAI(iterations=1, rearrange_iterations=5)
+        e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+        assert ai.planRearrange(e, 1, None) is plan
+    finally:
+        ai_ismcts_module._search = orig
+
+
+def test_rearrange_search_falls_back_to_heuristic_when_clone_impossible():
+    """`_search()`가 None(클론 불가 등)을 반환하면 안전하게
+    HeuristicAI.planRearrange로 폴백해야 한다."""
+    calls = {"n": 0}
+    orig_h = HeuristicAI.planRearrange
+
+    def counting(self, g, pi, compiling_line):
+        calls["n"] += 1
+        return orig_h(self, g, pi, compiling_line)
+
+    HeuristicAI.planRearrange = counting
+    orig_s = ai_ismcts_module._search
+    ai_ismcts_module._search = lambda *a, **k: None
+    try:
+        ai = ISMCTSAI(iterations=1, rearrange_iterations=5)
+        e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+        ai.planRearrange(e, 1, None)
+    finally:
+        ai_ismcts_module._search = orig_s
+        HeuristicAI.planRearrange = orig_h
+
+    assert calls["n"] == 1
+
+
+def test_rearrange_search_path_runs_full_games_and_is_actually_exercised():
+    """§8과 같은 우려(스텁이 실제로 그 경로를 타는지)를 서치 버전에도
+    똑같이 적용한다 -- `_search`가 "planRearrange" 타입 root_req로 최소
+    한 번은 불렸는지까지 확인."""
+    calls = {"types": []}
+    orig = ai_ismcts_module._search
+
+    def counting_search(g, pi0, root_req, *args, **kwargs):
+        calls["types"].append(root_req["type"])
+        return orig(g, pi0, root_req, *args, **kwargs)
+
+    ai_ismcts_module._search = counting_search
+    try:
+        for seed in range(4):
+            e = _driven_engine(
+                seed,
+                ai_modules={1: ISMCTSAI(iterations=8, rollout_turn_cap=4, rearrange_iterations=6),
+                            2: ISMCTSAI(iterations=8, rollout_turn_cap=4)},
+            )
+            assert e.error is None
+    finally:
+        ai_ismcts_module._search = orig
+
+    assert "planRearrange" in calls["types"], "Control 재배치 서브탐색이 한 번도 발동하지 않음"

@@ -32,11 +32,10 @@ def _other(pi):
 # 자체는 대입 시점에 즉시 평가된다).
 #
 # 순서상 여기 채워진 카드는 "Control/컴파일에 직결되는 강력한 카드부터"라는
-# 로드맵 우선순위(260803_ai_lua_vs_python_analysis.md §7 1단계)를 따른다.
+# 로드맵 우선순위를 따른다.
 # 아직 여기 없는 카드(Pride_0, Fulcrum_1, Nova_3, Momentum_4 등)는 전부
 # "다른 카드를 라인 사이에서 옮기는" 효과라 일반화된 shift/move verb
-# 프라이서(shiftPrior/shiftCardValue/bestShiftWhere 같은 인프라)가 아직
-# 없어서 그 인프라부터 먼저 갖춘 뒤로 미뤘다.
+# 프라이서 인프라가 아직 없어서 그 인프라부터 먼저 갖춘 뒤로 미뤘다.
 # ---------------------------------------------------------------------------
 
 def _control_gain_value(g, pi):
@@ -631,6 +630,424 @@ def _sloth_1(g, pi, card, line, hand_after):
     return max(enemy_ret, own_ret)
 
 
+def _is_uncovered(g, c):
+    """c가 지금 그 스택의 맨 위(=대상이 될 수 있는 상태)인가."""
+    owner, line, idx = _locate(g, c)
+    if owner is None:
+        return False
+    return idx == len(g.players[owner]["stacks"][line]) - 1
+
+
+# =============================================================================
+# 5차 배치 (2026-08-03) -- 카드 프라이싱 정밀 재대조 후 보완한 함수들.
+# 아래 TAGS 갱신부와 세트로 봐야 의미가 통한다.
+# =============================================================================
+
+def _fd_line_value(g, pi, card, line, hand_after):
+    """Apathy_0/Smoke_2 공용: 패시브 "이 라인 뒷면 카드 수만큼 +" (두
+    카드가 같은 함수를 공유)."""
+    return 0.9 * g.facedown_in_line(line)
+
+
+def _life_3_cover(g, pi, card, line, hand_after):
+    """Life_3 (onCovered): 나중에 덮이면 덱에서 다른 라인에 뒷면 한 장 --
+    지연 트리거라 0.5 스케일로 할인."""
+    lines = [l for l in (1, 2, 3) if l != line]
+    return _best_facedown_material(g, pi, lines, min(len(g.players[pi]["deck"]), 1), 0.5)
+
+
+def _darkness_2(g, pi, card, line, hand_after):
+    """Darkness_2: 이 스택은 활성 중 뒷면 카드가 값 4 취급(패시브) --
+    뒤집기 스윙을 일반 규칙(값 2 기준) 대신 4 기준으로 다시 계산한다.
+    상대 카드는 정체를 모르니 일반 _flip_swing 그대로."""
+    best = 0.0
+    for owner in (1, 2):
+        for c in g.players[owner]["stacks"][line]:
+            if _covered_after_play(g, c, pi, line) and g.can_flip(c):
+                if owner == pi:
+                    if c.face_up:
+                        swing = 4 - c.value - (0.5 if c.definition else 0)
+                    else:
+                        swing = c.value - 4 + (0.6 if c.definition else 0)
+                else:
+                    swing = _flip_swing(g, pi, c)
+                best = max(best, swing)
+    return best
+
+
+def _darkness_2_ongoing(g, pi, card, line, hand_after):
+    """Darkness_2 패시브: 지금 이 스택의 뒷면 카드 수 x 2(값4-값2 초과분,
+    카드 한 장당)."""
+    if line is None:
+        return 0.0
+    n = sum(1 for c in g.players[pi]["stacks"][line] if not c.face_up)
+    return 2.0 * n
+
+
+def _life_4(g, pi, card, line, hand_after):
+    """Life_4: 카드 위에 놓였을 때만(덮으면서 냄) 뽑는다."""
+    return 0.7 if g.players[pi]["stacks"][line] else 0.0
+
+
+def _clarity_0(g, pi, card, line, hand_after):
+    """Clarity_0: 패시브 "이 라인 값 += 내 손패 수"."""
+    return 0.9 * hand_after
+
+
+def _clarity_1_cover(g, pi, card, line, hand_after):
+    """Clarity_1 (onCovered): 나중에 덮이면 3장 뽑기 -- 지연 트리거
+    할인(0.55)."""
+    return 0.55 * _draw_value(g, pi, 3)
+
+
+def _fear_0(g, pi, card, line, hand_after):
+    """Fear_0: 뒤집기 또는 이동 중 선택(둘 다 optional) + 자기 자신도
+    대상이 될 수 있음. 정밀한 타겟형 shift 채점 인프라가 없어(이
+    프로젝트는 del/ret/flip만 일반화됨) shift 쪽은 _best_shift_where
+    (판 전체 스캔)로 근사한다."""
+    flip = _flip_prior(g, pi, {"n": 1, "may": True})
+    shift = _best_shift_where(g, pi, lambda c: True, optional=True)
+    flip = max(flip, _played_facedown_value(g, pi, line) - card.value - 0.5)
+    shift = max(shift, 0.8)
+    return max(0.0, flip, shift)
+
+
+def _mirror_0(g, pi, card, line, hand_after):
+    """Mirror_0: 패시브 "이 라인 값 += 이 라인의 상대 카드 수"."""
+    return 0.9 * len(g.players[_other(pi)]["stacks"][line])
+
+
+def _peace_1(g, pi, card, line, hand_after):
+    """Peace_1: 양쪽 손패 전부 버리기 -- 상대 손패가 많고 내가 적을수록
+    이득."""
+    oh = len(g.players[_other(pi)]["hand"])
+    return 0.8 * oh - 0.9 * hand_after + (1.0 if oh > 0 else 0.0)
+
+
+def _peace_6(g, pi, card, line, hand_after):
+    """Peace_6: 손패가 2장 이상 남으면 자기 자신이 뒷면으로 뒤집힌다
+    (6->2)."""
+    if hand_after > 1:
+        return _played_facedown_value(g, pi, line) - card.value
+    return 0.0
+
+
+def _diversity_0(g, pi, card, line, hand_after):
+    """Diversity_0: 판 전체 서로 다른 앞면 프로토콜이 6종(자기 포함)
+    이상이면 컴파일을 하나 그냥 얻는다."""
+    n = _distinct_protos_in_play(g)
+    already = any(x.face_up and x.proto == card.proto for x in g.cards_in_play())
+    if not already:
+        n += 1
+    return 8.0 if n >= 6 else 0.0
+
+
+def _unity_0(g, pi, card, line, hand_after):
+    """Unity_0: 앞면 단결(Unity) 카드가 1장 이상(자기 포함) 있어야
+    뒤집기/뽑기 선택 효과가 발동."""
+    return 0.8 if _unity_count(g) >= 1 else 0.0
+
+
+def _unity_1_ongoing(g, pi, card, line, hand_after):
+    """Unity_1 패시브: 앞면 단결 카드 수 x 0.2, 4장 이상이면 4.0 고정."""
+    n = _unity_count(g)
+    return 4.0 if n >= 4 else n * 0.2
+
+
+def _lust_3(g, pi, card, line, hand_after):
+    """Lust_3 즉시 효과: 상대 손패를 무작위 공개하고 상대 쪽에 강제로
+    낸다 -- 내가 뒷면으로 낼 수 있는 곳이 있으면 약한 손해로 근사."""
+    o = _other(pi)
+    if not g.players[o]["hand"] or line is None:
+        return 0.0
+    legal = any(g.can_play_face_down(pi, None, l)[0] for l in (1, 2, 3))
+    return -0.7 if legal else 0.0
+
+
+def _lust_3_ongoing(g, pi, card, line, hand_after):
+    """Lust_3 패시브: 지금 Control을 쥐고 있을 때만, 드러난 카드 중
+    최선의 뒤집기(선택) 가치에서 1.2를 뺀 나머지."""
+    if g.control != pi:
+        return 0.0
+    flip = _best_flip_where(g, pi, lambda c: _is_uncovered(g, c), optional=True)
+    return max(0.0, flip - 1.2)
+
+
+def _overwhelm_2(g, pi, card, line, hand_after):
+    """Overwhelm_2: 종료 시 양쪽 다 우세한 라인마다 덱 맨 위를 뒷면으로
+    -- 내 몫에서 상대 몫을 뺀 순이득."""
+    o = _other(pi)
+    lines = (1, 2, 3)
+    own = _best_facedown_material(g, pi, lines, len(g.players[pi]["deck"]), 1.6)
+    theirs = _best_facedown_material(g, o, lines, len(g.players[o]["deck"]), 1.6)
+    return own - theirs
+
+
+def _overwhelm_4(g, pi, card, line, hand_after):
+    """Overwhelm_4: 내 카드 수가 상대보다 우세할 때만, 상대의 가려진
+    (맨 위 아닌) 최저값 카드 하나를 제거."""
+    o = _other(pi)
+    if _count_cards_owned(g, pi) + 1 <= _count_cards_owned(g, o):
+        return 0.0
+    lowest, best = None, 0.0
+    for c in g.cards_in_play():
+        if c.owner == o and not _is_uncovered(g, c):
+            value = _eff_val(c)
+            score = _delete_card_value(g, pi, c)
+            if lowest is None or value < lowest:
+                lowest, best = value, score
+            elif value == lowest:
+                best = max(best, score)
+    return best
+
+
+def _wrath_0(g, pi, card, line, hand_after):
+    """Wrath_0: 패시브로 이 라인의 최고값 카드가 전부 무효화(0 취급) +
+    덱에서 뒷면 한 장 스폰."""
+    if line is None:
+        return 0.0
+    highest = card.value
+    for owner in (1, 2):
+        for c in g.players[owner]["stacks"][line]:
+            highest = max(highest, _eff_val(c))
+    swing = -card.value if card.value == highest else 0.0
+    for owner in (1, 2):
+        for c in g.players[owner]["stacks"][line]:
+            if _eff_val(c) == highest:
+                swing += -highest if owner == pi else highest
+    spawn = 0.0
+    if g.players[pi]["deck"] and g.can_play_face_down(pi, None, line)[0]:
+        spawn = _face_down_play_value(g, pi, line, 1.6)
+    return swing + spawn
+
+
+def _inert_3(g, pi, card, line, hand_after):
+    """Inert_3: 손패를 소모해 다른 각 라인에 뒷면 플레이 -- 상대도 이
+    라인에 뒷면을 낼 수 있으면 그만큼 상쇄."""
+    if line is None:
+        return 0.0
+    own_lines = [l for l in (1, 2, 3) if l != line]
+    own_value = _best_facedown_material(g, pi, own_lines, hand_after, 1.1)
+    o = _other(pi)
+    opp_value = 0.0
+    if g.players[o]["hand"] and g.can_play_face_down(o, None, line)[0]:
+        opp_value = _face_down_play_value(g, o, line, 1.4)
+    return own_value - opp_value
+
+
+def _hate_2(g, pi, card, line, hand_after):
+    """Hate_2: 내 최고값(이 라인 제외) 카드를 먼저 지우고, 그게 이 카드
+    자신의 인쇄값보다 작으면(=이 카드 자신이 최고값) 거기서 멈춘다
+    (상대쪽 2단계 미발동) -- 예전엔 이 순차 규칙 없이 del 스펙 2개를
+    독립적으로 합산했다."""
+    o = _other(pi)
+    best_other = 0
+    for l in (1, 2, 3):
+        if l != line:
+            top = g.top_card(pi, l)
+            if top and _eff_val(top) > best_other:
+                best_other = _eff_val(top)
+    if best_other < card.value:
+        return -card.value
+    their_max = 0
+    for l in (1, 2, 3):
+        top = g.top_card(o, l)
+        if top and _eff_val(top) > their_max:
+            their_max = _eff_val(top)
+    return their_max * 0.9 - best_other
+
+
+# --- 동적 ongoing 엔진 함수들 (판 상황에 따라 값을 다시 계산하는 지속효과) ---
+
+def _life_0_ongoing(g, pi, card, line, hand_after):
+    return -1.5 if _direct_cover(g, card) else 0.0
+
+
+def _corruption_6_ongoing(g, pi, card, line, hand_after):
+    return -0.9 if hand_after > 0 else -3.0
+
+
+def _courage_6_ongoing(g, pi, card, line, hand_after):
+    if line is None:
+        return 0.0
+    return -4.0 if g.line_value(_other(pi), line) > g.line_value(pi, line) else 0.0
+
+
+def _ice_3_ongoing(g, pi, card, line, hand_after):
+    return _shift_card_value(g, pi, card) if _direct_cover(g, card) else 0.0
+
+
+def _assimilation_2_ongoing(g, pi, card, line, hand_after):
+    o = _other(pi)
+    if not g.players[o]["deck"] or line is None or not g.can_play_face_down(pi, None, line)[0]:
+        return 0.0
+    return _face_down_play_value(g, pi, line, 1.5)
+
+
+def _assimilation_6_ongoing(g, pi, card, line, hand_after):
+    if not g.players[pi]["deck"]:
+        return 0.0
+    o = _other(pi)
+    least = None
+    for l in (1, 2, 3):
+        if g.can_play_face_down(pi, None, l)[0]:
+            gift = _face_down_play_value(g, o, l, 0.8)
+            least = gift if least is None else min(least, gift)
+    return -(least or 0.0)
+
+
+def _envy_0_ongoing(g, pi, card, line, hand_after):
+    if line is None:
+        return 0.0
+    best = 0.0
+    for c in g.players[_other(pi)]["stacks"][line]:
+        best = max(best, _eff_val(c))
+    return best
+
+
+def _envy_1_ongoing(g, pi, card, line, hand_after):
+    return 2.0 if g.control == _other(pi) else 0.0
+
+
+def _envy_3_ongoing(g, pi, card, line, hand_after):
+    if line is None or not g.players[pi]["deck"] or not g.can_play_face_down(pi, None, line)[0]:
+        return 0.0
+    return _face_down_play_value(g, pi, line, 1.2)
+
+
+def _gluttony_4_ongoing(g, pi, card, line, hand_after):
+    return _draw_value(g, pi, 1) * 0.7
+
+
+def _fulcrum_0_ongoing(g, pi, card, line, hand_after):
+    return _opp_discard_prior(g, _other(pi), 2) if hand_after == 0 else 0.0
+
+
+def _momentum_1_ongoing(g, pi, card, line, hand_after):
+    if line is None or not g.players[pi]["deck"] or not g.can_play_face_down(pi, None, line)[0]:
+        return 0.2
+    return _face_down_play_value(g, pi, line, 1.0)
+
+
+def _momentum_6_ongoing(g, pi, card, line, hand_after):
+    for owner in (1, 2):
+        for l in (1, 2, 3):
+            if (not g.players[owner]["compiled"][l]
+                    and g.line_value(owner, l) >= COMPILE_THRESHOLD
+                    and g.line_value(owner, l) > g.line_value(_other(owner), l)):
+                return -2.0
+    return -0.3
+
+
+def _overwhelm_3_ongoing(g, pi, card, line, hand_after):
+    if (hand_after < 5 or line is None or not g.players[pi]["deck"]
+            or not g.can_play_face_down(pi, None, line)[0]):
+        return 0.0
+    return _face_down_play_value(g, pi, line, 1.6)
+
+
+def _overwhelm_6_ongoing(g, pi, card, line, hand_after):
+    if line is None:
+        return 0.0
+    mine = g.line_value(pi, line)
+    owner, _, _ = _locate(g, card)
+    if owner is None:
+        mine += card.value
+    return -4.0 if g.line_value(_other(pi), line) > mine else 0.0
+
+
+def _pride_2_ongoing(g, pi, card, line, hand_after):
+    if line is None or g.line_value(pi, line) <= g.line_value(_other(pi), line):
+        return 0.0
+    return _draw_value(g, pi, 1)
+
+
+def _pride_6_ongoing(g, pi, card, line, hand_after):
+    return -2.0 if g.control == _other(pi) else -0.2
+
+
+def _sloth_0_ongoing(g, pi, card, line, hand_after):
+    above = _direct_cover(g, card)
+    return 5.0 if (above and above.face_up and above.proto == "Sloth") else 0.2
+
+
+def _wrath_1_ongoing(g, pi, card, line, hand_after):
+    if g.control != pi:
+        return 0.0
+    deletion = None
+    for c in g.cards_in_play():
+        if c.face_up and _is_uncovered(g, c):
+            v = _delete_card_value(g, pi, c)
+            deletion = v if deletion is None else max(deletion, v)
+    if deletion is None:
+        return 0.0
+    return max(0.0, deletion - 1.2)
+
+
+def _flexible_2_ongoing(g, pi, card, line, hand_after):
+    above = _direct_cover(g, card)
+    if above and not above.face_up and g.can_move(above):
+        return _shift_card_value(g, pi, above)
+    return 0.0
+
+
+def _flexible_4_ongoing(g, pi, card, line, hand_after):
+    if g.draw_blocked(pi):
+        return 0.0
+    owner, _, _ = _locate(g, card)
+    down = (_facedown_value_after_flip(g, card) if owner is not None
+            else _played_facedown_value(g, pi, line))
+    return max(0.0, _draw_value(g, pi, 2) + down - card.value)
+
+
+def _inert_0_ongoing(g, pi, card, line, hand_after):
+    if line is None:
+        return 0.0
+    signed = 0.0
+    for owner in (1, 2):
+        for c in g.players[owner]["stacks"][line]:
+            if c is not card and c.face_up and c.definition:
+                signed += -0.6 if owner == pi else 0.6
+    return signed
+
+
+def _inert_1_ongoing(g, pi, card, line, hand_after):
+    """Inert_1 패시브 근사 -- 원래는 start/finish/reactive(비-Top 트리거)
+    만 세야 하지만, 이 프로젝트의 card.definition엔 그 세부 구분이 노출돼
+    있지 않아 카드 유무(=효과 존재 여부)로 근사한다(Inert_0 패시브와
+    동일 근사 폭)."""
+    if line is None:
+        return 0.0
+    signed = 0.0
+    for owner in (1, 2):
+        for c in g.players[owner]["stacks"][line]:
+            if c is not card and c.face_up and c.definition:
+                signed += -0.6 if owner == pi else 0.6
+    return signed
+
+
+def _rigid_1_ongoing(g, pi, card, line, hand_after):
+    if hand_after == 0 or line is None:
+        return 0.0
+    o = _other(pi)
+    eligible = 0
+    for l in (1, 2, 3):
+        top = g.top_card(o, l)
+        if l != line and top and not top.face_up and g.can_play_face_down(pi, None, l)[0]:
+            eligible += 1
+    return 1.1 * min(hand_after, eligible)
+
+
+def _rigid_2_ongoing(g, pi, card, line, hand_after):
+    return 1.0 if g.players[pi]["deck"] else 0.0
+
+
+def _speed_3_prior(g, pi, card, line, hand_after):
+    """Speed_3: 내 카드 1장 강제 이동(대상 제한 없음) -- targetsAfterPlay
+    기반 shiftPrior 인프라가 없어 _best_shift_where로 근사."""
+    return _best_shift_where(g, pi, lambda c: c.owner == pi, optional=False)
+
+
 # =============================================================================
 # AUX 1 -- LOVE / APATHY / HATE
 # carddefs.py의 실제 구현(_love_*, _apathy_*, _hate_* 등)과 대조해서 채움.
@@ -653,13 +1070,13 @@ TAGS["Love_6"] = {"opp_draw": 2}
 
 # --- APATHY ---
 # Apathy_0: 패시브로 이 라인 값이 뒷면 카드 수만큼 오름 -- 지속 효과.
-TAGS["Apathy_0"] = {"ongoing": True}
+TAGS["Apathy_0"] = {"fn": _fd_line_value}
 # Apathy_1: 이 라인의 다른 앞면 카드 전부(양쪽)를 뒤집음 -- 내가 유리한
 # 라인/구성일 때만 좋은 양날의 카드.
 TAGS["Apathy_1"] = {"flip": {"n": "all"}}
 # Apathy_2: 이 라인 중앙 명령 무효화(패시브) + 가려질 때 자기 자신을 먼저
 # 뒤집음 -- 둘 다 판 상황과 무관하게 늘 유지되는 지속 효과로 취급.
-TAGS["Apathy_2"] = {"ongoing": True}
+TAGS["Apathy_2"] = {"ongoing": 1.0, "on_covered": True}
 # Apathy_3: 상대의 드러난 앞면 카드 1장을 뒤집음(값을 2로 깎음).
 TAGS["Apathy_3"] = {"flip": {"n": 1, "owner": "enemy", "from_face": "up"}}
 # Apathy_4: 자신의 가려진 "앞면" 카드 1장을 뒤집을 수 있음(선택) -- 위험한
@@ -675,13 +1092,13 @@ TAGS["Hate_0"] = {"del": {"n": 1}}
 TAGS["Hate_1"] = {"self_discard": 3, "del": {"n": 2}}
 # Hate_2: 먼저 "자신의" 최고값 카드 제거, 그다음 "상대의" 최고값 카드 제거
 # (순차 2단계라 del을 리스트로).
-TAGS["Hate_2"] = {"del": [{"n": 1, "owner": "own"}, {"n": 1, "owner": "enemy"}]}
+TAGS["Hate_2"] = {"fn": _hate_2}
 # Hate_3: 리액티브(자신이 카드를 제거한 후 1장 뽑음) -- 즉시효과가 아니라
 # 지속적으로 붙는 보너스라 ongoing으로 취급.
 TAGS["Hate_3"] = {"ongoing": True}
 # Hate_4: onCovered 트리거(즉시 play 효과가 아님) -- 이후 방어적 가치가
 # 있는 지속 성격이라 ongoing으로 취급.
-TAGS["Hate_4"] = {"ongoing": True}
+TAGS["Hate_4"] = {"on_covered": True}
 TAGS["Hate_5"] = {"self_discard": 1}
 
 # =============================================================================
@@ -698,14 +1115,14 @@ TAGS["Water_5"] = {"self_discard": 1}
 
 # --- SPIRIT ---
 TAGS["Spirit_0"] = {"refresh_self": True, "draw": 1}
-TAGS["Spirit_1"] = {"draw": 2, "ongoing": True}
+TAGS["Spirit_1"] = {"draw": 2, "ongoing": 0.3}
 TAGS["Spirit_2"] = {"flip": {"n": 1, "may": True}}
 TAGS["Spirit_3"] = {"ongoing": True}
 TAGS["Spirit_4"] = {"prior": 1.0}   # 자기 프로토콜 2개 위치 교환 -- 정체된 라인 구제용
 TAGS["Spirit_5"] = {"self_discard": 1}
 
 # --- FIRE ---
-TAGS["Fire_0"] = {"flip": {"n": 1}, "draw": 2, "ongoing": True}  # onCovered 보너스 포함
+TAGS["Fire_0"] = {"flip": {"n": 1}, "draw": 2, "on_covered": True}  # onCovered 보너스
 TAGS["Fire_1"] = {"self_discard": 1, "del": {"n": 1}, "gated_on_discard": True}
 TAGS["Fire_2"] = {"self_discard": 1, "ret": {"n": 1}, "gated_on_discard": True}
 TAGS["Fire_3"] = {"ongoing": True}  # End: 선택적 버리기->뒤집기
@@ -725,19 +1142,19 @@ TAGS["Gravity_5"] = {"self_discard": 1}
 
 # --- LIGHT ---
 TAGS["Light_0"] = {"flip": {"n": 1}, "draw": 2}  # 뽑는 양은 뒤집은 카드 값에 따라 다름(근사)
-TAGS["Light_1"] = {"ongoing": True}
+TAGS["Light_1"] = {"ongoing": 1.2}
 TAGS["Light_2"] = {"draw": 2}
 TAGS["Light_3"] = {"prior": 1.0}  # 이 라인의 뒷면 카드 전부를 다른 라인으로 이동
 TAGS["Light_4"] = {"prior": 0.5}  # 상대 손패 공개(정보만)
 TAGS["Light_5"] = {"self_discard": 1}
 
 # --- METAL ---
-TAGS["Metal_0"] = {"ongoing": True, "flip": {"n": 1}}  # 패시브(상대 값 -2) + 뒤집기
+TAGS["Metal_0"] = {"ongoing": 1.5, "flip": {"n": 1}}  # 패시브(상대 값 -2) + 뒤집기
 TAGS["Metal_1"] = {"draw": 2, "block_compile": True}
 TAGS["Metal_2"] = {"ongoing": True}  # 패시브: 상대 이 라인 뒷면 플레이 금지
 TAGS["Metal_3"] = {"draw": 1, "prior": 1.0}  # 8장 이상 라인 제거는 상황부 보너스
 TAGS["Metal_5"] = {"self_discard": 1}
-TAGS["Metal_6"] = {"ongoing": True}  # onCovered/onFlip 자폭 방어
+TAGS["Metal_6"] = {"prior": -0.3}  # 덮이면 자멸 -- 손해(부호 버그 수정: ongoing:True로 +0.8 오채점하던 것)
 
 # --- DEATH ---
 TAGS["Death_0"] = {"del": [{"n": 1}, {"n": 1}]}  # 다른 두 라인에서 각각 1장(대상 제한 없음)
@@ -750,41 +1167,41 @@ TAGS["Death_5"] = {"self_discard": 1}
 # --- DARKNESS ---
 TAGS["Darkness_0"] = {"draw": 3}
 TAGS["Darkness_1"] = {"flip": {"n": 1, "owner": "enemy"}}
-TAGS["Darkness_2"] = {"ongoing": True}  # 패시브(이 스택 뒷면=값4) + 뒤집기 옵션
+TAGS["Darkness_2"] = {"fn": _darkness_2, "ongoing": _darkness_2_ongoing}
 TAGS["Darkness_3"] = {"extra_play": True}  # 손패 카드를 다른 라인에 즉시 뒷면으로 추가 플레이
 TAGS["Darkness_4"] = {"prior": 0.5}  # 뒷면 카드 1장 이동(대상 제한 없음)
 TAGS["Darkness_5"] = {"self_discard": 1}
 
 # --- PLAGUE ---
-TAGS["Plague_0"] = {"opp_discard": 1, "ongoing": True}  # 패시브(이 라인 상대 플레이 금지)
+TAGS["Plague_0"] = {"opp_discard": 1, "ongoing": 1.0}  # 패시브(이 라인 상대 플레이 금지)
 TAGS["Plague_1"] = {"opp_discard": 1, "ongoing": True}  # 리액티브(상대가 버릴 때마다 나도 뽑음)
 TAGS["Plague_2"] = {"self_discard": 1, "opp_discard": 2}  # 최소 1장 기준(나1:상대2)
 TAGS["Plague_3"] = {"flip": {"n": "all"}}  # 드러난 다른 앞면 카드 전부(양쪽)
-TAGS["Plague_4"] = {"ongoing": True}  # End: 상대 뒷면 카드 강제 제거 + 자기 선택적 뒤집기
+TAGS["Plague_4"] = {"ongoing": 1.0}  # End: 상대 뒷면 카드 강제 제거 + 자기 선택적 뒤집기
 TAGS["Plague_5"] = {"self_discard": 1}
 
 # --- PSYCHIC ---
 TAGS["Psychic_0"] = {"draw": 2, "opp_discard": 2}
-TAGS["Psychic_1"] = {"ongoing": True}  # 패시브(상대 뒷면만) + 시작(자기 뒤집기)
+TAGS["Psychic_1"] = {"ongoing": 1.2}  # 패시브(상대 뒷면만) + 시작(자기 뒤집기)
 TAGS["Psychic_2"] = {"opp_discard": 2}  # + 상대 프로토콜 재배열(부가 교란)
 TAGS["Psychic_3"] = {"opp_discard": 1}  # + 상대 카드 1장 이동(부가)
-TAGS["Psychic_4"] = {"ongoing": True}  # End: 선택적 상대 카드 반환->자기 뒤집기
+TAGS["Psychic_4"] = {"ongoing": 1.2}  # End: 선택적 상대 카드 반환->자기 뒤집기
 TAGS["Psychic_5"] = {"self_discard": 1}
 
 # --- SPEED ---
 TAGS["Speed_0"] = {"extra_play": True}
-TAGS["Speed_1"] = {"draw": 2, "ongoing": True}  # + 캐시 정리 후 리액티브 추가 뽑기
-TAGS["Speed_2"] = {"ongoing": True}  # onCompileDelete: 제거 대신 이동(생존)
-TAGS["Speed_3"] = {"prior": 0.5, "ongoing": True}  # 강제 자기 카드 이동 + End 선택 이동/뒤집기
+TAGS["Speed_1"] = {"draw": 2, "ongoing": 0.5}  # + 캐시 정리 후 리액티브 추가 뽑기
+TAGS["Speed_2"] = {"prior": 0.3}  # onCompileDelete: 제거 대신 이동(생존)
+TAGS["Speed_3"] = {"prior": _speed_3_prior, "ongoing": 0.5}  # 강제 자기 카드 이동 + End 선택 이동/뒤집기
 TAGS["Speed_4"] = {"prior": 0.5}  # 상대 뒷면 카드 1장 이동(교란/유틸)
 TAGS["Speed_5"] = {"self_discard": 1}
 
 # --- LIFE ---
-TAGS["Life_0"] = {"deck_plays": {"eligible": "own_line"}, "ongoing": True}  # 내 카드 있는 라인마다 -- 고정 2가 아님
+TAGS["Life_0"] = {"deck_plays": {"eligible": "own_line"}, "ongoing": _life_0_ongoing}  # 내 카드 있는 라인마다 -- 고정 2가 아님
 TAGS["Life_1"] = {"flip": [{"n": 1}, {"n": 1}]}
 TAGS["Life_2"] = {"draw": 1, "flip": {"n": 1, "may": True}}
-TAGS["Life_3"] = {"ongoing": True}  # onCovered: 덮이기 전 다른 라인에 뒷면 플레이
-TAGS["Life_4"] = {"ongoing": True}  # 덮고 있으면 뽑기(상황 의존 지속형)
+TAGS["Life_3"] = {"on_covered": _life_3_cover}
+TAGS["Life_4"] = {"fn": _life_4}
 TAGS["Life_5"] = {"self_discard": 1}
 
 # =============================================================================
@@ -792,16 +1209,16 @@ TAGS["Life_5"] = {"self_discard": 1}
 # =============================================================================
 
 # --- CHAOS ---
-TAGS["Chaos_0"] = {"flip": [{"n": 1}, {"n": 1}, {"n": 1}], "ongoing": True}  # 라인마다 1장 + start 트레이드
+TAGS["Chaos_0"] = {"flip": [{"n": 1}, {"n": 1}, {"n": 1}], "ongoing": 0.5}  # 라인마다 1장 + start 트레이드
 TAGS["Chaos_1"] = {"prior": 1.0}   # 양쪽 프로토콜 강제 재배열(디스럽션+자기부담 혼합)
 TAGS["Chaos_2"] = {"prior": 0.5}   # 자신의 커버된 카드 이동
-TAGS["Chaos_3"] = {"ongoing": True}  # freePlay 패시브(프로토콜 불일치해도 냄)
-TAGS["Chaos_4"] = {"ongoing": True}  # End: 손패 전부 버리고 그만큼 다시 뽑기
+TAGS["Chaos_3"] = {}  # freePlay는 합법성 문제일 뿐 효과가 아님(부호 버그 수정: ongoing:True로 +0.8 오채점하던 것)
+TAGS["Chaos_4"] = {"ongoing": 0.6}  # End: 손패 전부 버리고 그만큼 다시 뽑기
 TAGS["Chaos_5"] = {"self_discard": 1}
 
 # --- CLARITY ---
-TAGS["Clarity_0"] = {"ongoing": True}  # 패시브: 이 라인 값 += 손패 수
-TAGS["Clarity_1"] = {"ongoing": True}  # start 공개+선택버리기, onCovered 뽑기3, play 상대손패공개
+TAGS["Clarity_0"] = {"fn": _clarity_0}
+TAGS["Clarity_1"] = {"ongoing": 1.0, "on_covered": _clarity_1_cover}  # start 공개+선택버리기, play 상대손패공개
 TAGS["Clarity_2"] = {"draw": 1}   # 덱에서 값1 카드 낚기 + 손패의 값1 카드 플레이
 TAGS["Clarity_3"] = {"draw": 1}   # 덱에서 값5 카드 낚기(원하는 카드를 정확히 얻음)
 TAGS["Clarity_4"] = {"prior": 0.3}  # 선택적 버림더미 셔플(자원 재활용 유틸)
@@ -813,18 +1230,18 @@ TAGS["Corruption_1"] = {"ret": {"n": 1}}  # 대상 제한 없이 반환(상대 �
 TAGS["Corruption_2"] = {"draw": 1, "self_discard": 1, "ongoing": True}  # + 자기 버림 후 상대도 버림(리액티브)
 TAGS["Corruption_3"] = {"flip": {"n": 1, "may": True}}  # 커버된 앞면 카드 뒤집기(소유자 무관)
 TAGS["Corruption_5"] = {"self_discard": 1}
-TAGS["Corruption_6"] = {"ongoing": True}  # End: 버리기 또는 자기 제거(자기부담 트리거)
+TAGS["Corruption_6"] = {"ongoing": _corruption_6_ongoing}
 
 # --- COURAGE ---
-TAGS["Courage_0"] = {"draw": 1, "ongoing": True}
+TAGS["Courage_0"] = {"draw": 1, "ongoing": 0.6}
 TAGS["Courage_1"] = {"del": {"n": 1, "owner": "enemy"}}  # 상대가 이기는 라인에서만 가능(자연히 고가치)
-TAGS["Courage_2"] = {"draw": 1, "ongoing": True}
-TAGS["Courage_3"] = {"ongoing": True}  # End: 상대 최고값 라인으로 자기 이동(전략적 조건부)
+TAGS["Courage_2"] = {"draw": 1, "ongoing": 0.5}
+TAGS["Courage_3"] = {"ongoing": 0.4}  # End: 상대 최고값 라인으로 자기 이동(전략적 조건부)
 TAGS["Courage_5"] = {"self_discard": 1}
-TAGS["Courage_6"] = {"ongoing": True}  # End: 이 라인에서 지고 있으면 자기 뒤집기(방어적 정보)
+TAGS["Courage_6"] = {"ongoing": _courage_6_ongoing}
 
 # --- FEAR ---
-TAGS["Fear_0"] = {"ongoing": True}  # 패시브(내 턴엔 상대 중앙명령 무효) + 이동/뒤집기 택1
+TAGS["Fear_0"] = {"fn": _fear_0}  # 패시브(내 턴엔 상대 중앙명령 무효)는 채점 대상 아님 -- 이동/뒤집기 택1만
 TAGS["Fear_1"] = {"draw": 2, "opp_discard": 1}  # 상대 손패 리셋(순 -1장 근사)
 TAGS["Fear_2"] = {"ret": {"n": 1, "owner": "enemy"}}
 TAGS["Fear_3"] = {"prior": 1.5}  # 이 라인의 상대 카드를 다른 라인으로 추방(약한 디나이얼)
@@ -832,10 +1249,10 @@ TAGS["Fear_4"] = {"opp_discard": 1}  # 상대가 무작위 카드 강제로 버�
 TAGS["Fear_5"] = {"self_discard": 1}
 
 # --- ICE ---
-TAGS["Ice_1"] = {"ongoing": True}  # 선택적 자기 이동 + 리액티브(상대가 이 라인에 내면 버리게 함)
+TAGS["Ice_1"] = {"ongoing": 1.0}  # 선택적 자기 이동 + 리액티브(상대가 이 라인에 내면 버리게 함)
 TAGS["Ice_2"] = {"prior": 0.5}  # 다른 카드 1장 이동(대상 제한 없음)
-TAGS["Ice_3"] = {"ongoing": True}  # End: 가려져 있으면 선택적 자기 이동
-TAGS["Ice_4"] = {"ongoing": True}  # 패시브: 자기 자신 뒤집기 불가(방어)
+TAGS["Ice_3"] = {"ongoing": _ice_3_ongoing}
+TAGS["Ice_4"] = {"prior": 0.4}  # 패시브: 자기 자신 뒤집기 불가(방어)
 TAGS["Ice_5"] = {"self_discard": 1}
 # Ice_6: 패시브가 "손패가 있으면 자신이 뽑기 불가" -- 소유자에게 불리한 자기
 # 제약형 카드. 확신은 낮지만 명백한 자기 손해라 마이너스로 반영.
@@ -850,25 +1267,25 @@ TAGS["Luck_4"] = {"del": {"n": 1}}
 TAGS["Luck_5"] = {"self_discard": 1}
 
 # --- MIRROR ---
-TAGS["Mirror_0"] = {"ongoing": True}  # 패시브: 이 라인 값 += 이 라인의 상대 카드 수
+TAGS["Mirror_0"] = {"fn": _mirror_0}
 TAGS["Mirror_1"] = {"ongoing": True}  # End: 상대 카드의 중앙명령을 대신 발동(강력하지만 상황 의존)
 TAGS["Mirror_2"] = {"prior": 1.0}  # 자기 스택 2개 전체 위치 교환
 TAGS["Mirror_3"] = {"flip": [{"n": 1, "owner": "own"}, {"n": 1, "owner": "enemy"}]}
-TAGS["Mirror_4"] = {"ongoing": True}  # 리액티브: 상대가 뽑으면 나도 뽑음
+TAGS["Mirror_4"] = {"ongoing": 1.0}  # 리액티브: 상대가 뽑으면 나도 뽑음
 TAGS["Mirror_5"] = {"self_discard": 1}
 
 # --- PEACE ---
-TAGS["Peace_1"] = {"ongoing": True}  # 양쪽 손패 전부 버리기 + End 조건부 뽑기(상황 의존)
+TAGS["Peace_1"] = {"fn": _peace_1}
 TAGS["Peace_2"] = {"draw": 1, "extra_play": True}  # 카드 1장을 뒷면으로 추가 플레이
 TAGS["Peace_3"] = {"flip": {"n": 1}}  # 선택적 버리기 + 손패수보다 값 큰 카드 뒤집기
-TAGS["Peace_4"] = {"ongoing": True}  # 리액티브: 상대 턴에 내가 버리면 뽑기
+TAGS["Peace_4"] = {"ongoing": 0.5}  # 리액티브: 상대 턴에 내가 버리면 뽑기
 TAGS["Peace_5"] = {"self_discard": 1}
-TAGS["Peace_6"] = {"ongoing": True}  # 손패 2장 이상이면 자기 뒤집기(조건부)
+TAGS["Peace_6"] = {"fn": _peace_6}
 
 # --- SMOKE ---
 TAGS["Smoke_0"] = {"deck_plays": {"eligible": "facedown_line"}}  # 뒷면 카드 있는 라인마다 -- 고정 2가 아님
 TAGS["Smoke_1"] = {"flip": {"n": 1, "owner": "own"}}  # + 선택적 이동
-TAGS["Smoke_2"] = {"ongoing": True}  # 패시브: 이 라인 값 += 이 라인 뒷면 카드 수
+TAGS["Smoke_2"] = {"fn": _fd_line_value}
 TAGS["Smoke_3"] = {"extra_play": True}  # 뒷면 카드 있는 라인에 손패 카드 추가로 뒷면 플레이
 TAGS["Smoke_4"] = {"prior": 0.5}  # 커버된 뒷면 카드 이동
 TAGS["Smoke_5"] = {"self_discard": 1}
@@ -878,16 +1295,16 @@ TAGS["Time_0"] = {"extra_play": True}  # 버림더미에서 카드 1장 플레�
 # Time_1: 뒤집기 자체는 이득이지만 "내 덱 전체를 버림"은 상당한 리스크/코스트라
 # 순가치가 애매함 -- 확신 없이 낙관적으로 잡지 않고 보수적으로 상쇄.
 TAGS["Time_1"] = {"flip": {"n": 1}, "prior": -1.0}
-TAGS["Time_2"] = {"ongoing": True}  # 셔플 후 리액티브 뽑기+이동, play 선택적 셔플
+TAGS["Time_2"] = {"ongoing": 0.6}  # 셔플 후 리액티브 뽑기+이동, play 선택적 셔플
 TAGS["Time_3"] = {"extra_play": True}  # 버림더미 카드를 공개 후 뒷면으로 플레이(선택)
 TAGS["Time_4"] = {"prior": 0.5}  # 뽑고 버려서 손패 필터링(순 카드수 변화 없음)
 TAGS["Time_5"] = {"self_discard": 1}
 
 # --- WAR ---
-TAGS["War_0"] = {"ongoing": True}  # 리액티브 2종(자기 리프레시 후 뒤집기, 상대 뽑기 후 제거)
-TAGS["War_1"] = {"ongoing": True}  # 리액티브: 상대 리프레시 후 나는 버리고 리프레시
+TAGS["War_0"] = {"ongoing": 1.2}  # 리액티브 2종(자기 리프레시 후 뒤집기, 상대 뽑기 후 제거)
+TAGS["War_1"] = {"ongoing": 0.4}  # 리액티브: 상대 리프레시 후 나는 버리고 리프레시
 TAGS["War_2"] = {"flip": {"n": 1}, "ongoing": True}  # + 리액티브(상대 컴파일 후 손패 전부 버리게)
-TAGS["War_3"] = {"draw": 1, "ongoing": True}  # + 리액티브(상대 버림 후 선택적 뒷면 플레이)
+TAGS["War_3"] = {"draw": 1, "ongoing": 0.6}  # + 리액티브(상대 버림 후 선택적 뒷면 플레이)
 TAGS["War_4"] = {"opp_discard": 1}
 TAGS["War_5"] = {"self_discard": 1}
 
@@ -899,17 +1316,17 @@ TAGS["War_5"] = {"self_discard": 1}
 # 상대의 뒷면 카드를 내 손패로 훔침 -- 제거(상대 입장 손실)와 획득(내 손패
 # 증가)이 겹치므로 둘 다 반영.
 TAGS["Assimilation_0"] = {"draw": 1, "del": {"n": 1, "owner": "enemy", "vmax": 2}}
-TAGS["Assimilation_1"] = {"self_discard": 1, "refresh_self": True, "ongoing": True}
-TAGS["Assimilation_2"] = {"ongoing": True}  # End: 상대 덱 맨 위를 이 스택에 뒷면으로(상대 자원 소모)
+TAGS["Assimilation_1"] = {"self_discard": 1, "refresh_self": True, "ongoing": 0.5}
+TAGS["Assimilation_2"] = {"ongoing": _assimilation_2_ongoing}
 TAGS["Assimilation_4"] = {"draw": 1, "opp_draw": 1}  # 상호 교환(대략 상쇄)
 TAGS["Assimilation_5"] = {"self_discard": 1}
 # Assimilation_6: 내 덱 맨 위를 "상대 쪽"에 뒷면으로 놓음 -- Corruption_0 방식대로
 # 착지한 편이 그 카드를 갖게 될 가능성이 높아 순가치가 불확실함. 확신 없이
 # 단정하지 않고 중립적 지속효과로만 표시.
-TAGS["Assimilation_6"] = {"ongoing": True}
+TAGS["Assimilation_6"] = {"ongoing": _assimilation_6_ongoing}
 
 # --- DIVERSITY ---
-TAGS["Diversity_0"] = {"ongoing": True}  # 조건부 컴파일 + End 조건부 추가 플레이
+TAGS["Diversity_0"] = {"fn": _diversity_0, "ongoing": 0.8}  # 조건부 컴파일 + End 조건부 추가 플레이
 TAGS["Diversity_1"] = {"draw": 2}  # 이동 + 이 라인 프로토콜 종류 수만큼 뽑기(근사)
 TAGS["Diversity_3"] = {"ongoing": True}  # 패시브: 조건부 +2
 TAGS["Diversity_4"] = {"flip": {"n": 1}}
@@ -917,11 +1334,11 @@ TAGS["Diversity_5"] = {"self_discard": 1}
 TAGS["Diversity_6"] = {"ongoing": True, "selfDeleteRisk": "diversity6"}  # End: 조건부 자기 제거(리스크)
 
 # --- UNITY ---
-TAGS["Unity_0"] = {"ongoing": True}  # 조건부 뒤집기or뽑기(+onCovered 동일 트리거)
-TAGS["Unity_1"] = {"ongoing": True}  # 패시브(여기 앞면 허용) + 조건부 컴파일+라인삭제
+TAGS["Unity_0"] = {"fn": _unity_0, "on_covered": True}  # 조건부 뒤집기or뽑기(+onCovered 동일 트리거)
+TAGS["Unity_1"] = {"prior": 0.5, "ongoing": _unity_1_ongoing}  # 패시브(여기 앞면 허용) + 조건부 컴파일+라인삭제
 TAGS["Unity_2"] = {"draw": 2}  # 필드의 단결 카드 수만큼 뽑기(근사)
 TAGS["Unity_3"] = {"flip": {"n": 1, "may": True}}
-TAGS["Unity_4"] = {"ongoing": True}  # End: 손패 비었으면 단결 카드 전부 뽑기
+TAGS["Unity_4"] = {"ongoing": 0.5}  # End: 손패 비었으면 단결 카드 전부 뽑기
 TAGS["Unity_5"] = {"self_discard": 1}
 
 # =============================================================================
@@ -942,15 +1359,15 @@ TAGS["Ambush_4"] = {"fn": _ambush_4}  # 조건부(드러난 뒷면 카드 필요
 TAGS["Ambush_5"] = {"self_discard": 1}
 
 # --- ENVY ---
-TAGS["Envy_0"] = {"ongoing": True}  # 패시브: 상대 최고값만큼 이 라인 값 증가
-TAGS["Envy_1"] = {"fn": _envy_1, "ongoing": True}  # 조건부 뒤집기 + 시작 조건부 컨트롤 탈취
+TAGS["Envy_0"] = {"ongoing": _envy_0_ongoing}
+TAGS["Envy_1"] = {"fn": _envy_1, "ongoing": _envy_1_ongoing}  # 조건부 뒤집기 + 시작 조건부 컨트롤 탈취
 TAGS["Envy_2"] = {"fn": _envy_2}  # 상대 손패 수만큼
-TAGS["Envy_3"] = {"ongoing": True}  # 리액티브: 상대가 이 라인에 낸 뒤 덱 맨 위 뒷면 플레이
+TAGS["Envy_3"] = {"ongoing": _envy_3_ongoing}
 TAGS["Envy_4"] = {"fn": _envy_4}  # 조건부(상대 컴파일 수 > 나) 뒤집기
 TAGS["Envy_5"] = {"self_discard": 1}
 
 # --- FULCRUM ---
-TAGS["Fulcrum_0"] = {"fn": _fulcrum_0, "ongoing": True}  # 조건부(손패 0장) 상대 버리기
+TAGS["Fulcrum_0"] = {"fn": _fulcrum_0, "ongoing": _fulcrum_0_ongoing}  # 조건부(손패 0장) 상대 버리기
 TAGS["Fulcrum_1"] = {"fn": _fulcrum_1}  # 다른 앞면 카드 전부 뒤집기(양날) + 스택 교환
 TAGS["Fulcrum_2"] = {"fn": _fulcrum_2}  # 조건부(손패 정확히 2장) 상대 카드 제거
 TAGS["Fulcrum_3"] = {"draw": 1, "prior": 0.5}  # 뽑기 + 좌우 프로토콜 교환
@@ -959,10 +1376,10 @@ TAGS["Fulcrum_5"] = {"self_discard": 1}
 
 # --- GLUTTONY ---
 TAGS["Gluttony_0"] = {"ret": {}, "draw": 1, "ongoing": True}  # 반환 + 뽑기 + 리액티브(캐시 정리 후 덱플레이)
-TAGS["Gluttony_1"] = {"draw": 2, "ongoing": True}  # 뽑기 + 리액티브(캐시 정리 후 제거, 자기포함)
+TAGS["Gluttony_1"] = {"draw": 2, "ongoing": 1.0}  # 뽑기 + 리액티브(캐시 정리 후 제거, 자기포함)
 TAGS["Gluttony_2"] = {"fn": _gluttony_2}  # 내 손패 수만큼
 TAGS["Gluttony_3"] = {"draw": 2}  # + 종료 조건부 제거(방어적 보너스, 근사 생략)
-TAGS["Gluttony_4"] = {"ongoing": True}  # 리액티브: 내가 리프레시한 뒤 뽑기
+TAGS["Gluttony_4"] = {"ongoing": _gluttony_4_ongoing}
 TAGS["Gluttony_5"] = {"self_discard": 1}
 
 # --- GREED ---
@@ -976,21 +1393,21 @@ TAGS["Greed_5"] = {"self_discard": 1}
 # --- LUST (값 1 없음) ---
 TAGS["Lust_0"] = {"fn": _lust_0, "ongoing": True}  # 패시브(양쪽 +10) + 컨트롤 탈취 + 상대 컴파일 봉쇄
 TAGS["Lust_2"] = {"fn": _lust_2, "ongoing": True}  # 패시브(프로토콜 무관 플레이) + 선택적 상대 카드 이동
-TAGS["Lust_3"] = {"ongoing": True}  # 상대 무작위 카드 공개+상대쪽 플레이 + 종료 조건부 컨트롤 포기
+TAGS["Lust_3"] = {"fn": _lust_3, "ongoing": _lust_3_ongoing}  # 상대 무작위 카드 공개+상대쪽 플레이 + 종료 조건부 컨트롤 포기
 TAGS["Lust_4"] = {"fn": _lust_4, "ongoing": True}  # 손패 공개 + 상대 컨트롤 박탈 + 리액티브 뽑기
 TAGS["Lust_5"] = {"self_discard": 1}
 TAGS["Lust_6"] = {"self_discard": 1, "fn": _lust_6}  # + 상대에게 강제 뒷면 플레이 시킴(순손실)
 
 # --- MOMENTUM (값 2 없음) ---
 TAGS["Momentum_0"] = {"deck_plays": {"eligible": "compiled_line"}}  # 컴파일된 라인마다 덱 맨 위 뒷면 플레이(라인 수 가변)
-TAGS["Momentum_1"] = {"ongoing": True}  # 리액티브 2종(컴파일 후 덱플레이, 재배열 후 버리기+뽑기)
+TAGS["Momentum_1"] = {"ongoing": _momentum_1_ongoing}  # 리액티브 2종(컴파일 후 덱플레이, 재배열 후 버리기+뽑기)
 TAGS["Momentum_3"] = {"draw": 2}
 TAGS["Momentum_4"] = {"prior": 0.5}  # 내 프로토콜 재배열
 TAGS["Momentum_5"] = {"self_discard": 1}
-TAGS["Momentum_6"] = {"self_discard": 1, "ongoing": True}  # + 리액티브 자기 제거(컴파일 후)
+TAGS["Momentum_6"] = {"self_discard": 1, "ongoing": _momentum_6_ongoing}  # + 리액티브 자기 제거(컴파일 후)
 
 # --- NOVA ---
-TAGS["Nova_0"] = {"ongoing": True}  # 시작 조건부 제거 + 컨트롤자가 재배열 + 종료 조건부 덱플레이
+TAGS["Nova_0"] = {"ongoing": 0.8, "prior": 0.5}  # 시작 조건부 제거 + 컨트롤자가 재배열 + 종료 조건부 덱플레이
 TAGS["Nova_1"] = {"fn": _nova_1}  # 이 스택 카드 수만큼
 TAGS["Nova_2"] = {"fn": _nova_2, "ongoing": True}  # 조건부 재배열or컨트롤 탈취 + 리액티브 이동
 TAGS["Nova_3"] = {"fn": _nova_3}  # 스택 카드 수보다 값 낮은 카드 이동
@@ -999,31 +1416,31 @@ TAGS["Nova_5"] = {"self_discard": 1}
 
 # --- OVERWHELM (값 0 없음) ---
 TAGS["Overwhelm_1"] = {"fn": _overwhelm_1}  # 우세한 각 라인에 덱 맨 위 뒷면 플레이(라인 수 가변)
-TAGS["Overwhelm_2"] = {"ongoing": True}  # 종료 전 라인 덱플레이+자기뒤집기 + 상대도 전 라인 덱플레이
-TAGS["Overwhelm_3"] = {"ongoing": True}  # 종료 조건부(손패 5장 이상) 덱플레이
-TAGS["Overwhelm_4"] = {"ongoing": True}  # 조건부(카드 수 우세) 상대 최저값 가려진 카드 제거
+TAGS["Overwhelm_2"] = {"fn": _overwhelm_2}
+TAGS["Overwhelm_3"] = {"ongoing": _overwhelm_3_ongoing}
+TAGS["Overwhelm_4"] = {"fn": _overwhelm_4}
 TAGS["Overwhelm_5"] = {"self_discard": 1}
-TAGS["Overwhelm_6"] = {"ongoing": True}  # 시작 조건부(상대 우세) 자기 뒤집기 -- 대체로 손해
+TAGS["Overwhelm_6"] = {"ongoing": _overwhelm_6_ongoing}  # 시작 조건부(상대 우세) 자기 뒤집기 -- 대체로 손해
 
 # --- PRIDE (값 1 없음) ---
 TAGS["Pride_0"] = {"fn": _pride_0, "ongoing": True}  # 리액티브(컴파일 후 리프레시) + 조건부 카드 이동
-TAGS["Pride_2"] = {"fn": _pride_2}  # 우세 라인 수만큼 + 시작 조건부 추가 뽑기
+TAGS["Pride_2"] = {"fn": _pride_2, "ongoing": _pride_2_ongoing}  # 우세 라인 수만큼 + 시작 조건부 추가 뽑기
 TAGS["Pride_3"] = {"flip": {"n": 1, "owner": "own"}}
 TAGS["Pride_4"] = {"fn": _pride_4}  # 조건부(컨트롤 보유) 상대 카드 이동
 TAGS["Pride_5"] = {"self_discard": 1}
-TAGS["Pride_6"] = {"fn": _pride_6, "ongoing": True}  # 리액티브/조건부 자기 뒤집기 -- 대체로 손해
+TAGS["Pride_6"] = {"fn": _pride_6, "ongoing": _pride_6_ongoing}  # 리액티브/조건부 자기 뒤집기 -- 대체로 손해
 
 # --- SLOTH ---
-TAGS["Sloth_0"] = {"fn": _sloth_0, "ongoing": True}  # 패시브(나태 카드 밑이면 +5) + 열세 라인 수만큼 뽑기
+TAGS["Sloth_0"] = {"fn": _sloth_0, "ongoing": _sloth_0_ongoing}  # 패시브(나태 카드 밑이면 +5) + 열세 라인 수만큼 뽑기
 TAGS["Sloth_1"] = {"fn": _sloth_1}  # 반환 + 조건부 리프레시 + 리액티브 덱플레이
-TAGS["Sloth_2"] = {"fn": _sloth_2, "ongoing": True}  # + 시작 선택적 손->덱바닥
+TAGS["Sloth_2"] = {"fn": _sloth_2, "ongoing": 0.2}  # + 시작 선택적 손->덱바닥
 TAGS["Sloth_3"] = {"opp_discard": 2}
-TAGS["Sloth_4"] = {"ongoing": True}  # onCovered: 앞면 카드 1장 먼저 뒤집기
+TAGS["Sloth_4"] = {"on_covered": True}  # 앞면 카드 1장 먼저 뒤집기
 TAGS["Sloth_5"] = {"self_discard": 1}
 
 # --- WRATH ---
-TAGS["Wrath_0"] = {"ongoing": True}  # 패시브(최고값 카드 무효) + 덱 맨 위 뒷면 플레이
-TAGS["Wrath_1"] = {"draw": 1, "fn": _wrath_1}  # + 종료 조건부 컨트롤 포기->제거
+TAGS["Wrath_0"] = {"fn": _wrath_0, "ongoing": 0.5}
+TAGS["Wrath_1"] = {"draw": 1, "fn": _wrath_1, "ongoing": _wrath_1_ongoing}  # + 종료 조건부 컨트롤 포기->제거
 TAGS["Wrath_2"] = {"fn": _wrath_2}  # 카드 최다 라인 앞면 전부 뒤집기(양날)
 TAGS["Wrath_3"] = {"flip": {"n": 1}}
 TAGS["Wrath_4"] = {"fn": _wrath_4}  # 컨트롤 포기 -> 상대 버리기(조건부)
@@ -1032,24 +1449,24 @@ TAGS["Wrath_5"] = {"self_discard": 1}
 # --- FLEXIBLE ---
 TAGS["Flexible_0"] = {"fn": _flexible_0}  # 카드 1장 반환 또는 이동(대상 제한 없음)
 TAGS["Flexible_1"] = {"fn": _flexible_1}  # 내 카드 1장 뒤집기 또는 이동
-TAGS["Flexible_2"] = {"draw": 1}  # + 종료 조건부 뒷면 카드 이동
+TAGS["Flexible_2"] = {"draw": 1, "ongoing": _flexible_2_ongoing}  # + 종료 조건부 뒷면 카드 이동
 TAGS["Flexible_3"] = {"fn": _flexible_3}  # 상대 카드 이동 또는 내 프로토콜 2개 교환
-TAGS["Flexible_4"] = {"ongoing": True}  # 종료 선택적 뽑기2 -> 뒤집기
+TAGS["Flexible_4"] = {"ongoing": _flexible_4_ongoing}  # 종료 선택적 뽑기2 -> 뒤집기
 TAGS["Flexible_5"] = {"self_discard": 1}
 
 # --- INERT ---
-TAGS["Inert_0"] = {"fn": _inert_0, "ongoing": True}  # 패시브(이 라인 상단명령 무효) + 다른 라인 뒤집기
-TAGS["Inert_1"] = {"opp_discard": 2}  # + 패시브(이 라인 하단명령 무효)
+TAGS["Inert_0"] = {"fn": _inert_0, "ongoing": _inert_0_ongoing}  # 패시브(이 라인 상단명령 무효) + 다른 라인 뒤집기
+TAGS["Inert_1"] = {"opp_discard": 2, "ongoing": _inert_1_ongoing}  # + 패시브(이 라인 하단명령 무효)
 TAGS["Inert_2"] = {"fn": _inert_2}  # 한 라인 최고값 카드 전부 뒤집기(양날)
-TAGS["Inert_3"] = {"ongoing": True}  # 손패 소모해 다른 각 라인 뒷면 플레이 + 상대도 여기 플레이
+TAGS["Inert_3"] = {"fn": _inert_3}
 TAGS["Inert_4"] = {"fn": _inert_4}  # 내 덱 전체 버리기 + 상대 덱 전체 버리기(상호)
 TAGS["Inert_5"] = {"self_discard": 1}
 
 # --- RIGID (값 0, 6 없음) ---
-TAGS["Rigid_1"] = {"flip": {"n": 1, "owner": "enemy", "from_face": "up"}, "ongoing": True}  # + 종료 조건부 뒷면 플레이
-TAGS["Rigid_2"] = {"ongoing": True}  # 리액티브: 내 행동 뒷면 플레이 후 덱 맨 위 추가 플레이
+TAGS["Rigid_1"] = {"flip": {"n": 1, "owner": "enemy", "from_face": "up"}, "ongoing": _rigid_1_ongoing}  # + 종료 조건부 뒷면 플레이
+TAGS["Rigid_2"] = {"ongoing": _rigid_2_ongoing}
 TAGS["Rigid_3"] = {"prior": 0.3}  # 손 카드를 이 카드 바로 밑에 뒷면으로
-TAGS["Rigid_4"] = {"ongoing": True}  # onCovered: 뒷면 카드에 덮이려 할 때 먼저 뽑기(방어)
+TAGS["Rigid_4"] = {"on_covered": True}  # 뒷면 카드에 덮이려 할 때 먼저 뽑기(방어)
 TAGS["Rigid_5"] = {"self_discard": 1}
 TAGS["Rigid_7"] = {"self_discard": 1, "fn": _rigid_7, "ongoing": -2.5}  # 뒤집기/이동 불가 + 종료 상대에게 뽑기or플레이(심각한 지속 부채, +0.8이 아니라 마이너스여야 함)
 
@@ -1108,6 +1525,146 @@ def _as_list(spec):
     if spec is None:
         return []
     return spec if isinstance(spec, list) else [spec]
+
+
+# ---------------------------------------------------------------------------
+# 공용 헬퍼 -- 개별 카드 fn들이 공유해서 쓴다.
+# ---------------------------------------------------------------------------
+
+def _draw_value(g, pi, n):
+    """뽑기 n장의 기대 가치 -- 실제로 뽑을 수 있는 만큼(덱+버림더미, 봉쇄
+    여부)으로 캡한다."""
+    if n <= 0 or g.draw_blocked(pi):
+        return 0.0
+    p = g.players[pi]
+    return 0.7 * min(n, len(p["deck"]) + len(p["discard"]))
+
+
+def _count_cards_owned(g, pi):
+    return sum(1 for c in g.cards_in_play() if c.owner == pi)
+
+
+def _count_compiled(g, pi):
+    return sum(1 for l in (1, 2, 3) if g.players[pi]["compiled"][l])
+
+
+def _locate(g, card):
+    """card의 (owner, line, index) -- 필드 위에 없으면 (None, None, None)."""
+    owner = card.owner
+    if owner is None:
+        return None, None, None
+    for line in (1, 2, 3):
+        stack = g.players[owner]["stacks"][line]
+        for i, c in enumerate(stack):
+            if c is card:
+                return owner, line, i
+    return None, None, None
+
+
+def _direct_cover(g, card):
+    """card 바로 위(덮고 있는) 카드 -- 없으면(맨 위이거나 필드 밖) None."""
+    owner, line, idx = _locate(g, card)
+    if owner is None:
+        return None
+    stack = g.players[owner]["stacks"][line]
+    return stack[idx + 1] if idx + 1 < len(stack) else None
+
+
+def _delete_card_value(g, pi, c):
+    """카드 하나를 지우는 가치(부호 있음) -- 상대 카드면 양수(이득), 내
+    카드면 음수(손해). live 지속효과가 있으면 가산, 상대 라인이면 위협도
+    보너스도 얹는다."""
+    value = _eff_val(c) * 0.9
+    if c.face_up and c.definition:
+        value += 0.75
+    owner, line, _ = _locate(g, c)
+    if owner is not None and owner != pi and line is not None:
+        th = _line_threat(g, pi, line)
+        value += 4.0 if th == 2 else (1.5 if th == 1 else 0.0)
+    elif owner == pi:
+        value = -value
+    return value
+
+
+def _line_count(g, line):
+    return len(g.players[1]["stacks"][line]) + len(g.players[2]["stacks"][line])
+
+
+def _projected_line_value(g, pi, line, played_line, card):
+    return g.line_value(pi, line) + (card.value if line == played_line else 0)
+
+
+def _lines_ahead_after_play(g, pi, played_line, card, ahead):
+    o = _other(pi)
+    n = 0
+    for line in (1, 2, 3):
+        mine = _projected_line_value(g, pi, line, played_line, card)
+        theirs = g.line_value(o, line)
+        if (ahead and mine > theirs) or (not ahead and mine < theirs):
+            n += 1
+    return n
+
+
+def _covered_after_play(g, c, pi, played_line):
+    """effect_prior()는 카드가 놓이기 *전*에 실행된다 -- 그래서 played_line
+    라인의 지금 맨 위 카드는(그 카드 자신 포함) 곧 새로 놓일 카드에 덮인다.
+    다른 라인/상대 쪽 카드는 지금 상태 그대로."""
+    owner, line, idx = _locate(g, c)
+    if owner is None:
+        return False
+    uncovered = idx == len(g.players[owner]["stacks"][line]) - 1
+    return (not uncovered) or (owner == pi and line == played_line)
+
+
+def _unity_count(g):
+    n = 0
+    for p in (1, 2):
+        for l in (1, 2, 3):
+            for c in g.players[p]["stacks"][l]:
+                if c.face_up and c.proto == "Unity":
+                    n += 1
+    return n
+
+
+def _facedown_value_after_flip(g, c):
+    owner, line, _ = _locate(g, c)
+    if owner is None:
+        return 2
+    return g.facedown_value_in_stack(g.players[owner]["stacks"][line])
+
+
+def _played_facedown_value(g, pi, line):
+    if line is None:
+        return 2
+    return g.facedown_value_in_stack(g.players[pi]["stacks"][line])
+
+
+def _opp_discard_prior(g, o, n):
+    oh = len(g.players[o]["hand"])
+    if oh == 0:
+        return 0.0
+    d = min(n, oh)
+    return 0.8 * d + (1.0 if oh - d == 0 else 0.0)
+
+
+def _face_down_play_value(g, side, line, scale):
+    if line is None:
+        return 0.0
+    return scale * g.facedown_value_in_stack(g.players[side]["stacks"][line]) / 2.0
+
+
+def _best_facedown_material(g, side, lines, available, scale, playing_player=None):
+    """available장을 lines 중 값이 가장 큰 곳부터 순서대로 뒷면으로 낸다고
+    가정했을 때의 합산 기대 가치(자격 있는 라인만, 상위 available개)."""
+    if not available or available <= 0:
+        return 0.0
+    playing_player = playing_player if playing_player is not None else side
+    values = []
+    for line in lines:
+        if g.can_play_face_down(playing_player, None, line)[0]:
+            values.append(_face_down_play_value(g, side, line, scale))
+    values.sort(reverse=True)
+    return sum(values[:min(available, len(values))])
 
 
 # ---------------------------------------------------------------------------
@@ -1298,16 +1855,25 @@ def effect_prior(g, pi, card, line=None):
         # 손패에서 카드를 하나 더 낼 기회 -- 손이 있어야 의미 있음.
         if g.players[pi]["hand"]:
             s += 2.2
-    ongoing = tag.get("ongoing")
-    if ongoing is True:
-        s += 0.8
-    elif isinstance(ongoing, (int, float)):
-        # bool은 int의 서브클래스라 위에서 먼저 걸러야 True가 여기로 안 샌다.
-        # 명시적 숫자(예: Rigid_7의 -2.5)는 그 값 그대로 쓴다 -- 대부분의
-        # 지속효과는 flat +0.8 근사로 충분하지만, 극히 드물게 "인쇄값에
-        # 비해 명백한 순손실"인 카드(Rigid_7)는 부호 자체가 반대라 이
-        # 일률적인 +0.8이 틀린 방향으로 채점한다.
-        s += ongoing
+    # semantic_value: 필드 값이 콜러블이면 (g, pi, card, line, hand_after)로
+    # 호출(판 상황을 봐야 하는 지속효과), True면 그 필드의 기본 스케일,
+    # 숫자면 그 값 그대로(예: Rigid_7의 ongoing=-2.5, Metal_6의
+    # prior=-0.3처럼 "인쇄값에 비해 명백한 순손실"인 카드는 부호 자체가
+    # 반대라 획일적 기본값이 틀린 방향으로 채점한다), None/False면 0.
+    def _semantic_value(value, default):
+        if callable(value):
+            return value(g, pi, card, line, hand_after)
+        if value is True:
+            return default
+        return value if isinstance(value, (int, float)) else 0.0
+
+    if tag.get("ongoing"):
+        s += _semantic_value(tag["ongoing"], 0.8)
+    if tag.get("on_covered"):
+        # onCovered: 지금 당장이 아니라 "나중에 이 카드가 덮이면" 발동하는
+        # 지연 트리거(기본값 0.3 -- ongoing의 0.8보다 낮음, 당장 켜져
+        # 있는 지속효과보다는 불확실한 미래 트리거라 할인).
+        s += _semantic_value(tag["on_covered"], 0.3)
     if tag.get("block_compile"):
         s += 7.0
     if tag.get("selfDeleteRisk") and _self_delete_risk_prior(g, tag["selfDeleteRisk"]):
@@ -1323,10 +1889,9 @@ def effect_prior(g, pi, card, line=None):
     if prior is not None:
         s += prior(g, pi, card, line, hand_after) if callable(prior) else prior
     # 판 상황을 직접 읽어야 하는(일반화된 verb로 못 잡는) 카드 전용 채점
-    # 함수 -- ai_prior.lua의 tag.fn과 동일한 계약: (g, pi, card, line,
-    # handAfter) -> 점수. del/ret/flip/draw/... 같은 일반 verb 위에
-    # 얹어지는 보정/추가 효과로, fn이 그 카드 효과의 나머지 전부(또는
-    # 전체)를 담당한다.
+    # 함수 -- 계약: (g, pi, card, line, hand_after) -> 점수. del/ret/flip/
+    # draw/... 같은 일반 verb 위에 얹어지는 보정/추가 효과로, fn이 그 카드
+    # 효과의 나머지 전부(또는 전체)를 담당한다.
     fn = tag.get("fn")
     if fn is not None:
         s += fn(g, pi, card, line, hand_after)

@@ -16,6 +16,14 @@ AI를 고치고 "좀 나아진 것 같다"는 감각은 믿을 수 없다. 10판
 
     # 커맨드라인에서 (모듈경로:클래스명)
     python3 scripts/arena.py src.game.ai_random:RandomAI src.game.ai_random:RandomAI 500
+
+병렬 실행(260803_병렬화_plan.md): n_workers>1(또는 "auto")을 주면 쌍을
+여러 CPU 프로세스에 나눠 돌린다. 이때 ai_a/ai_b는 반드시 피클 가능해야
+한다 -- 람다나 함수 안 클로저는 안 되고, 최상위 클래스나
+functools.partial(클래스, **kwargs)를 쓸 것:
+    from functools import partial
+    arena(partial(ISMCTSAI, iterations=200, policy_w=w), HeuristicAI,
+          n_pairs=15, n_workers="auto")
 """
 
 import importlib
@@ -29,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.game import protocols as Protocols  # noqa: E402
 from src.game.engine import Engine  # noqa: E402
+from scripts.parallel_utils import check_picklable, limit_blas_threads, run_parallel  # noqa: E402
 
 # 한 판이 비정상적으로 길어질 때의 안전장치 (엔진 TURN_CAP과 별개로 스텝 상한).
 MAX_STEPS = 20000
@@ -66,47 +75,91 @@ def _random_protocol_pair(rnd):
     return pool[:3], pool[3:6]
 
 
+# 병렬 워커 전용 모듈 전역 -- _pool_init()이 워커 프로세스마다 한 번씩
+# 채워준다(무거운 값을 매 쌍마다 다시 피클링/전송하지 않기 위함). 순차
+# 실행(n_workers<=1)일 때는 이 프로세스(메인) 안에서 한 번만 채워진다.
+_worker_ai_a = None
+_worker_ai_b = None
+
+
+def _pool_init(ai_a, ai_b):
+    limit_blas_threads()  # numpy import/사용 전에 걸어야 효과가 있음
+    global _worker_ai_a, _worker_ai_b
+    _worker_ai_a, _worker_ai_b = ai_a, ai_b
+
+
+def _play_pair_worker(item):
+    """미러 페어 한 쌍(2판)을 두고 (A 승수, B 승수, 무승부수, A의 쌍
+    승리지분 0/0.5/1)을 반환한다. run_parallel()의 worker_fn 계약대로
+    item 하나(= (protos1, protos2, seed))만 받는다 -- _pool_init()이
+    채워둔 모듈 전역 _worker_ai_a/_worker_ai_b를 읽어 쓴다."""
+    protos1, protos2, seed = item
+    wins_a = wins_b = draws = 0
+    a_in_pair = 0
+
+    # 1판: A가 1번 자리
+    w = play_one(_mk(_worker_ai_a), _mk(_worker_ai_b), protos1, protos2, seed)
+    if w == 1:
+        wins_a += 1
+        a_in_pair += 1
+    elif w == 2:
+        wins_b += 1
+    else:
+        draws += 1
+
+    # 2판: 자리만 맞바꿈 (시드/프로토콜 동일) -- 선공·프로토콜 이점 상쇄
+    w = play_one(_mk(_worker_ai_b), _mk(_worker_ai_a), protos1, protos2, seed)
+    if w == 2:
+        wins_a += 1
+        a_in_pair += 1
+    elif w == 1:
+        wins_b += 1
+    else:
+        draws += 1
+
+    return wins_a, wins_b, draws, a_in_pair / 2.0
+
+
 def arena(ai_a, ai_b, n_pairs=500, seed0=0, label_a="A", label_b="B",
-          progress=True):
+          progress=True, n_workers=1):
     """ai_a와 ai_b를 n_pairs쌍(= 2*n_pairs판) 붙여서 결과를 출력/반환.
 
-    반환: {"wins_a", "wins_b", "draws", "games", "rate", "ci"}
+    n_workers=1(기본값)이면 예전과 동일하게 순차 실행. n_workers>1(또는
+    "auto")이면 쌍들을 CPU 프로세스 여러 개에 나눠 돌린다(260803_병렬화_
+    plan.md) -- 이때 ai_a/ai_b는 피클 가능해야 한다(모듈 docstring 참고).
+
+    반환: {"wins_a", "wins_b", "draws", "games", "rate", "ci", "elapsed"}
     """
+    if n_workers != 1:
+        check_picklable(ai_a, "ai_a")
+        check_picklable(ai_b, "ai_b")
+
+    # 프로토콜 추첨은 쌍마다 하나의 공유 RNG 스트림을 순차 소비하므로,
+    # 병렬로 나눠 던지기 전에 여기서 먼저 전부 뽑아둔다 -- 이래야
+    # n_workers 값과 무관하게 항상 같은 쌍 목록을 돌게 되어(실행 순서가
+    # 결과에 영향을 못 줌) n_workers=1일 때와 정확히 같은 승부들이
+    # 재생된다.
     rnd = random.Random(seed0)
+    work_items = [(*_random_protocol_pair(rnd), seed0 + i) for i in range(n_pairs)]
+
     wins_a = wins_b = draws = 0
     pair_scores = []   # 쌍마다 A의 승리 지분 (0 / 0.5 / 1)
+    done = 0
     t0 = time.time()
 
-    for i in range(n_pairs):
-        protos1, protos2 = _random_protocol_pair(rnd)
-        seed = seed0 + i
-        a_in_pair = 0
+    def _on_result(r):
+        nonlocal wins_a, wins_b, draws, done
+        wa, wb, dr, score = r
+        wins_a += wa
+        wins_b += wb
+        draws += dr
+        pair_scores.append(score)
+        done += 1
+        if progress and done % max(1, n_pairs // 10) == 0:
+            print(f"  ... {done * 2}판 ({wins_a}승 {wins_b}패)", flush=True)
 
-        # 1판: A가 1번 자리
-        w = play_one(_mk(ai_a), _mk(ai_b), protos1, protos2, seed)
-        if w == 1:
-            wins_a += 1
-            a_in_pair += 1
-        elif w == 2:
-            wins_b += 1
-        else:
-            draws += 1
-
-        # 2판: 자리만 맞바꿈 (시드/프로토콜 동일) -- 선공·프로토콜 이점 상쇄
-        w = play_one(_mk(ai_b), _mk(ai_a), protos1, protos2, seed)
-        if w == 2:
-            wins_a += 1
-            a_in_pair += 1
-        elif w == 1:
-            wins_b += 1
-        else:
-            draws += 1
-
-        pair_scores.append(a_in_pair / 2.0)
-
-        if progress and (i + 1) % max(1, n_pairs // 10) == 0:
-            done = (i + 1) * 2
-            print(f"  ... {done}판 ({wins_a}승 {wins_b}패)", flush=True)
+    run_parallel(work_items, _play_pair_worker, init_fn=_pool_init,
+                 init_args=(ai_a, ai_b), n_workers=n_workers, on_result=_on_result)
 
     elapsed = time.time() - t0
 

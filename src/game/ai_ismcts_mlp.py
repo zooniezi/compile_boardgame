@@ -19,6 +19,21 @@ p99≈4.53(gen1 선형 모델의 표준편차≈1.16/p95≈1.9보다 폭이 넓�
 비선형이라 극값이 더 극단적으로 나온다는 계획서 §5.3의 예상과
 일치). gen1의 `eval_scale=2.0`을 그대로 썼다면 이 분포에서 tanh가
 너무 일찍 포화돼 탐색 신호가 뭉개졌을 것.
+
+`DEFAULT_LEGIBLE_EPS=0.04`는 루트 가독성 동점 처리(`ISMCTSAI`의
+`legible_eps` 참고)의 허용 오차값 -- 더 크게 잡으면 탐색이 실제로 선호
+하는 수(진짜 가치 차이가 있는 죽은 라인 방어 등)까지 덮어쓰기 시작할
+위험이 있어 보수적으로 잡았다. 이 프리셋이 학습 eval + 학습 정책 +
+mcts 탐색을 전부 갖춘 가장 상위 스택이라 여기서만 기본으로 켠다 --
+중급(`ISMCTSLearnedAI`)과 손튜닝 `ISMCTSAI`는 기본값 None(꺼짐)을
+그대로 둔다.
+
+`DEFAULT_REARRANGE_ITERATIONS=80`은 이 프리셋의 기본 `iterations`
+(`ISMCTSAI` 기본값 200)의 약 0.4배 -- 메인 탐색보다 훨씬 저렴한
+예산으로도 "포기 + 단일 스왑 6가지"라는 작은 후보군은 충분히 구분
+가능하다는 판단이다. Control 재배치 서브탐색(`ISMCTSAI.planRearrange`,
+4단계 260804)도 legible과 같은 이유로 이 "고급" 프리셋에서만 기본으로
+켠다.
 """
 
 from pathlib import Path
@@ -28,16 +43,22 @@ from src.game.ai_sim import evaluate_learned_mlp, load_mlp_weights
 
 DEFAULT_MLP_WEIGHTS_PATH = Path(__file__).resolve().parent / "data" / "eval_weights_mlp.npz"
 DEFAULT_MLP_EVAL_SCALE = 3.1
+DEFAULT_LEGIBLE_EPS = 0.04
+DEFAULT_REARRANGE_ITERATIONS = 80
 
 
 class ISMCTSMLPAI(ISMCTSAI):
     """`ISMCTSAI`와 완전히 같은 인터페이스지만, 기본 `eval_fn`이 학습된
-    소형 MLP 평가함수다. `iterations`/`c_ucb`/`rollout_turn_cap` 등 다른
-    인자는 그대로 오버라이드 가능."""
+    소형 MLP 평가함수고 루트 가독성 동점 처리(`legible_eps`)와 Control
+    재배치 서브탐색(`rearrange_iterations`)이 기본으로 켜져 있다.
+    `iterations`/`c_ucb`/`rollout_turn_cap` 등 다른 인자는 그대로
+    오버라이드 가능."""
 
     def __init__(self, weights_path=DEFAULT_MLP_WEIGHTS_PATH,
                  eval_scale=DEFAULT_MLP_EVAL_SCALE, **kwargs):
         kwargs.setdefault("eval_fn", evaluate_learned_mlp)
         kwargs.setdefault("eval_w", load_mlp_weights(str(weights_path)))
         kwargs.setdefault("eval_scale", eval_scale)
+        kwargs.setdefault("legible_eps", DEFAULT_LEGIBLE_EPS)
+        kwargs.setdefault("rearrange_iterations", DEFAULT_REARRANGE_ITERATIONS)
         super().__init__(**kwargs)

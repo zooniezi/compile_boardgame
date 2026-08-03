@@ -18,6 +18,18 @@ from src.game.ai_prior import (
     _nova_1, _overwhelm_1, _pride_4, _rigid_7,
     _nova_2, _lust_4, _wrath_4, _greed_0, _greed_4, _lust_2, _lust_6,
     _inert_4, _pride_2, _sloth_0, _sloth_1,
+    _hate_2, _darkness_2, _darkness_2_ongoing, _life_4, _clarity_0,
+    _clarity_1_cover, _fear_0, _mirror_0, _peace_1, _peace_6, _fd_line_value,
+    _diversity_0, _unity_0, _unity_1_ongoing, _lust_3, _lust_3_ongoing,
+    _overwhelm_2, _overwhelm_4, _wrath_0, _inert_3, _life_0_ongoing,
+    _corruption_6_ongoing, _courage_6_ongoing, _ice_3_ongoing,
+    _assimilation_2_ongoing, _assimilation_6_ongoing, _envy_0_ongoing,
+    _envy_1_ongoing, _envy_3_ongoing, _gluttony_4_ongoing, _fulcrum_0_ongoing,
+    _momentum_1_ongoing, _momentum_6_ongoing, _overwhelm_3_ongoing,
+    _overwhelm_6_ongoing, _pride_2_ongoing, _pride_6_ongoing, _sloth_0_ongoing,
+    _wrath_1_ongoing, _flexible_2_ongoing, _flexible_4_ongoing,
+    _inert_0_ongoing, _inert_1_ongoing, _rigid_1_ongoing, _rigid_2_ongoing,
+    _speed_3_prior, _is_uncovered,
 )
 from src.game.rules import COMPILE_THRESHOLD
 
@@ -62,13 +74,27 @@ def test_hate_0_values_removal_higher_when_enemy_line_is_threatening():
 
 
 def test_hate_2_sequential_removal_targets_own_then_enemy():
+    """Hate_2는 "내 최고값(이 라인 제외)을 먼저 지우고, 그게 이 카드
+    자신의 인쇄값보다 작으면(=이 카드 자신이 최고값) 거기서 멈춘다"는
+    순차 규칙이다 -- 두 del을 독립적으로 합산하면 안 된다."""
     e = Engine(protocols1=["Hate", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
     hate2 = _card(e, "Hate", 2, 1)
-    # 내 쪽엔 낮은 카드, 상대 쪽엔 높은 카드 -> 상대 쪽 제거 이득이 더 커야 함
-    e.players[1]["stacks"][1].append(_card(e, "Water", 1, 1))
-    e.players[2]["stacks"][1].append(_card(e, "Ice", 6, 2))
-    s = effect_prior(e, 1, hate2)
-    assert s > 0  # 내 손실(1)보다 상대 이득(6)이 훨씬 커서 순이익
+    # 내 다른 라인의 최고값(5)이 Hate_2 자신(2)보다 커서 2단계(상대 제거)가
+    # 실제로 발동하는 경우 -- 상대의 값6을 지우는 이득이 순손실(5)보다 커야 함.
+    e.players[1]["stacks"][2].append(_card(e, "Fire", 5, 1))
+    e.players[2]["stacks"][3].append(_card(e, "Death", 6, 2))
+    s = effect_prior(e, 1, hate2, line=1)
+    assert s > 0
+
+    # 내 다른 라인에 Hate_2 자신(2)보다 큰 카드가 없으면 -- Hate_2 자신이
+    # 내 최고값이 되어 자기 자신을 지우는 걸로 끝난다(2단계 미발동, 상대
+    # 카드가 아무리 비싸도 무시됨).
+    e2 = Engine(protocols1=["Hate", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    hate2_low = _card(e2, "Hate", 2, 1)
+    e2.players[1]["stacks"][2].append(_card(e2, "Fire", 1, 1))
+    e2.players[2]["stacks"][3].append(_card(e2, "Death", 6, 2))
+    s2 = effect_prior(e2, 1, hate2_low, line=1)
+    assert s2 == -2  # 자기 자신(값2)을 그대로 잃음, 상대 값6은 안 봄
 
 
 def test_apathy_5_and_hate_5_are_pure_cost_cards():
@@ -297,8 +323,8 @@ def test_sloth_1_returns_the_opponents_strongest_uncovered_card():
 
 
 # ---------------------------------------------------------------------------
-# bespoke fn -- Lust_0 / Greed_1 / Pride_6 (Control/컴파일 직결 카드부터,
-# 260803_ai_lua_vs_python_analysis.md §7 1단계 우선순위)
+# bespoke fn -- Lust_0 / Greed_1 / Pride_6 (Control/컴파일 직결 카드부터라는
+# 로드맵 우선순위)
 # ---------------------------------------------------------------------------
 
 def test_lust_0_prices_control_gain_higher_when_taken_from_the_opponent():
@@ -431,7 +457,7 @@ def test_best_shift_where_picks_the_highest_value_candidate():
 
 # ---------------------------------------------------------------------------
 # bespoke fn (2차 배치) -- Pride_0 / Nova_3 / Greed_3 / Flexible_0 / Flexible_3
-# (shift 인프라로 새로 정밀화된 카드들, 260803_ai_lua_vs_python_analysis.md §7)
+# (shift 인프라로 새로 정밀화된 카드들)
 # ---------------------------------------------------------------------------
 
 def test_pride_0_with_control_can_target_the_opponents_side_too():
@@ -1047,17 +1073,30 @@ def test_smoke_0_effect_prior_scales_with_eligible_facedown_lines():
 
 
 def test_life_0_effect_prior_scales_with_own_nonempty_lines():
-    """Life_0은 ongoing 태그도 있어 deck_plays가 0이어도 기본 0.8점은
-    남는다 -- deck_plays 쪽만 실제 라인 수만큼 늘어나는지 그 증분으로 확인."""
+    """Life_0의 deck_plays는 실제 자격 라인 수만큼 늘어난다. ongoing은
+    `_life_0_ongoing` 대응 -- 이 카드가 필드에 놓여 있고 "덮이면"
+    (directCover) -1.5, 아직 안 놓였거나 안 덮였으면 0(고정 +0.8이 아님
+    -- 카드가 없는 상태에서 덮일 수도 없기 때문)."""
     e = Engine(protocols1=["Life", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
     c = _card(e, "Life", 0, 1)
 
-    base = effect_prior(e, 1, c)  # 자격 라인 0개 -> ongoing(0.8)만
-    assert base == pytest.approx(0.8)
+    base = effect_prior(e, 1, c)  # 자격 라인 0개, 필드에 없어 ongoing도 0
+    assert base == pytest.approx(0.0)
 
     mine = _card(e, "Water", 3, 1, face_up=True)
     e.players[1]["stacks"][1].append(mine)
     assert effect_prior(e, 1, c) == pytest.approx(base + 1.0)
+
+
+def test_life_0_ongoing_penalizes_being_covered():
+    e = Engine(protocols1=["Life", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    life0 = _card(e, "Life", 0, 1, face_up=True)
+    e.players[1]["stacks"][1].append(life0)
+    assert _life_0_ongoing(e, 1, life0, 1, 5) == 0.0  # 아직 안 덮임
+
+    cover = _card(e, "Water", 3, 1, face_up=True)
+    e.players[1]["stacks"][1].append(cover)
+    assert _life_0_ongoing(e, 1, life0, 1, 5) == -1.5  # 이제 덮임
 
 
 def test_water_1_unconditional_deck_plays_still_flat_two():
@@ -1223,3 +1262,116 @@ def test_choose_line_play_intent_is_not_affected_by_this_fix():
 
     req = {"chooser": 1, "candidates": [1, 2], "intent": "play"}
     assert choose_line(e, req) == 1  # play는 이번 수정 대상이 아니므로 그대로 값 큰 라인1
+
+
+# =============================================================================
+# 5차 배치 (2026-08-03) -- 카드 프라이싱 정밀 재대조로 찾은 격차 보완
+# 회귀 테스트. 부호 버그 2건이 가장 중요(오늘 이전엔 방향 자체가 틀려
+# 있었다).
+# =============================================================================
+
+def test_metal_6_is_a_liability_not_a_bonus():
+    """부호 버그: Metal_6은 덮이면 자멸하는 카드라 prior=-0.3(손해)로
+    채점해야 하는데, 예전 Python은 ongoing:True(+0.8, 보너스)로 정반대
+    채점했다."""
+    e = Engine(protocols1=["Metal", "Water", "Fire"], protocols2=["Ice", "Fire", "Death"])
+    metal6 = _card(e, "Metal", 6, 1)
+    assert effect_prior(e, 1, metal6) < 0
+
+
+def test_chaos_3_contributes_nothing():
+    """부호 버그: Chaos_3("freePlay"는 합법성 문제일 뿐 효과가 아님)는
+    빈 태그(기여 0)여야 하는데, 예전 Python은 ongoing:True(+0.8)로
+    존재하지 않는 보너스를 채점했다."""
+    e = Engine(protocols1=["Chaos", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    chaos3 = _card(e, "Chaos", 3, 1)
+    assert effect_prior(e, 1, chaos3) == 0.0
+
+
+def test_darkness_2_treats_facedown_as_value_4_not_2():
+    """Darkness_2를 이 라인에 내면(effect_prior는 배치 전에 실행되므로
+    지금 이 라인의 맨 위 카드는 곧 덮인다) 뒷면 카드는 4 취급이다 --
+    앞면 값1 카드를 뒤집어 숨기면 보통은 1->2(+1)지만, 이 패시브 아래선
+    1->4(+2.5, 라이브 효과 페널티 0.5 포함)로 더 커야 한다."""
+    e = Engine(protocols1=["Darkness", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    existing = _card(e, "Water", 1, 1, face_up=True)  # 앞면, 값1, 라이브 효과 있음
+    e.players[1]["stacks"][1].append(existing)
+
+    darkness2 = _card(e, "Darkness", 2, 1)  # 아직 필드에 안 놓임(효과 평가 대상)
+    value = _darkness_2(e, 1, darkness2, 1, 5)
+    assert value == pytest.approx(2.5)  # 4 - 1 - 0.5(라이브 효과 페널티)
+
+
+def test_darkness_2_ongoing_scales_with_facedown_count_in_stack():
+    e = Engine(protocols1=["Darkness", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    darkness2 = _card(e, "Darkness", 2, 1, face_up=True)
+    e.players[1]["stacks"][1].append(darkness2)
+    assert _darkness_2_ongoing(e, 1, darkness2, 1, 5) == 0.0
+    e.players[1]["stacks"][1].append(_card(e, "Water", 3, 1, face_up=False))
+    assert _darkness_2_ongoing(e, 1, darkness2, 1, 5) == 2.0
+    e.players[1]["stacks"][1].append(_card(e, "Fire", 1, 1, face_up=False))
+    assert _darkness_2_ongoing(e, 1, darkness2, 1, 5) == 4.0
+
+
+def test_clarity_0_scales_with_hand_size():
+    e = Engine(protocols1=["Clarity", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    clarity0 = _card(e, "Clarity", 0, 1)
+    assert _clarity_0(e, 1, clarity0, 1, 0) == 0.0
+    assert _clarity_0(e, 1, clarity0, 1, 4) == pytest.approx(3.6)
+
+
+def test_mirror_0_scales_with_opponent_cards_in_line():
+    e = Engine(protocols1=["Mirror", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    mirror0 = _card(e, "Mirror", 0, 1)
+    assert _mirror_0(e, 1, mirror0, 1, 5) == 0.0
+    e.players[2]["stacks"][1].append(_card(e, "Ice", 3, 2))
+    e.players[2]["stacks"][1].append(_card(e, "Metal", 1, 2))
+    assert _mirror_0(e, 1, mirror0, 1, 5) == pytest.approx(1.8)
+
+
+def test_diversity_0_needs_six_distinct_face_up_protocols():
+    e = Engine(protocols1=["Diversity", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    diversity0 = _card(e, "Diversity", 0, 1)
+    assert _diversity_0(e, 1, diversity0, 1, 5) == 0.0  # 판에 앞면 카드가 아직 없음(자기 포함해도 1종)
+
+    protos = ["Water", "Fire", "Ice", "Metal", "Death"]
+    for i, p in enumerate(protos):
+        e.players[1]["stacks"][2].append(_card(e, p, i, 1, face_up=True))
+    assert _diversity_0(e, 1, diversity0, 1, 5) == 8.0  # 5종 + 자기(Diversity) = 6종
+
+
+def test_is_uncovered_matches_top_of_stack():
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    bottom = _card(e, "Water", 1, 1, face_up=True)
+    top = _card(e, "Fire", 2, 1, face_up=True)
+    e.players[1]["stacks"][1].append(bottom)
+    assert _is_uncovered(e, bottom) is True
+    e.players[1]["stacks"][1].append(top)
+    assert _is_uncovered(e, bottom) is False
+    assert _is_uncovered(e, top) is True
+
+
+def test_ongoing_supports_callable_engine_and_on_covered_default_scale():
+    """인프라 회귀: TAGS의 ongoing/on_covered가 콜러블이면 (g,pi,card,line,
+    hand_after)로 호출되고, on_covered=True 기본값은 ongoing(0.8)이 아니라
+    0.3이어야 한다(지연 트리거는 즉시 지속효과보다 할인)."""
+    e = Engine(protocols1=["Hate", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    hate4 = _card(e, "Hate", 4, 1)
+    assert effect_prior(e, 1, hate4) == pytest.approx(0.3)
+
+    called = {}
+
+    def fake_engine(g, pi, card, line, hand_after):
+        called["args"] = (pi, line, hand_after)
+        return 1.23
+
+    old_tag = TAGS.get("Hate_4")
+    TAGS["Hate_4"] = {"ongoing": fake_engine}
+    try:
+        result = effect_prior(e, 1, hate4, line=2)
+    finally:
+        TAGS["Hate_4"] = old_tag
+    assert result == pytest.approx(1.23)
+    pi, line, hand_after = called["args"]
+    assert (pi, line) == (1, 2)
+    assert hand_after >= 0
