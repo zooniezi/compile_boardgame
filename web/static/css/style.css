@@ -1642,6 +1642,24 @@ button {
   animation: card-enter .28s cubic-bezier(.2,.9,.3,1.3);
 }
 
+/* 카드 뒤집기: 정면에서 시작해 옆으로 완전히 눕는(거의 안 보이는 상태를
+   또렷이 거치는) 지점까지 갔다가 다시 펴지는 것처럼 회전시켜 "방금
+   뒤집혔다"는 걸 눈으로 확실히 좇을 수 있게 한다. 이미 새 면이 그려진
+   엘리먼트를 도는 것뿐이라 두 면을 따로 그릴 필요는 없다 -- 회전 중간에
+   거의 납작해지는 구간(25~50%)이 길어서 "카드가 뒤집혔다"는 착시가
+   충분히 오래 유지된다. */
+@keyframes card-flip {
+  0%   { transform: perspective(700px) rotateY(0deg) scale(1); filter: brightness(1); }
+  22%  { transform: perspective(700px) rotateY(-88deg) scale(0.9); filter: brightness(0.55); }
+  50%  { transform: perspective(700px) rotateY(-92deg) scale(0.88); filter: brightness(0.5); }
+  78%  { transform: perspective(700px) rotateY(14deg) scale(1.05); filter: brightness(1.15); }
+  100% { transform: perspective(700px) rotateY(0deg) scale(1); filter: brightness(1); }
+}
+
+.card-flip {
+  animation: card-flip .8s cubic-bezier(.45,.05,.4,1);
+}
+
 /* ==========================================================================
    드롭존: 한쪽 면만 가능해도 텍스트 라벨 표시 + 앞/뒷면 색상 구분
    ========================================================================== */

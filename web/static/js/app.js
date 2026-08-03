@@ -502,6 +502,38 @@ let requestSeq = 0; // 오래된 응답이 최신 화면을 덮어쓰는 경쟁 
 async function handleState(state, mySeq) {
   if (mySeq !== undefined && mySeq !== requestSeq) return; // 그새 더 최신 요청이 나감 -- 이 응답은 버림
   lastState = state;
+
+  // 손패/덱 -> 필드(또는 손패) 애니메이션용: render()가 손패 DOM을 새로
+  // 그려서 카드를 지워버리기 전에, 지금(이전 렌더 기준) 시작 위치를 미리
+  // 찍어둔다. 덱은 #deck-p{pi}가 매번 새로 만들어지지 않는 고정
+  // 엘리먼트라 렌더 전/후 아무 때나 위치를 구해도 상관없다.
+  let playFromRect = null;
+  if (state.pending && state.pending.kind === "anim") {
+    const ev0 = state.pending.event || {};
+    const fromDeck = ev0.kind === "draw" || ((ev0.kind === "playFaceUp" || ev0.kind === "playFaceDown") && ev0.fromDeck);
+    if (fromDeck && ev0.uid && ev0.player) {
+      const deckEl = document.querySelector(`#deck-p${ev0.player}`);
+      if (deckEl) playFromRect = deckEl.getBoundingClientRect();
+    } else if ((ev0.kind === "playFaceUp" || ev0.kind === "playFaceDown") && ev0.uid) {
+      const handEl = document.querySelector(`#hand-cards [data-uid="${ev0.uid}"]`);
+      if (handEl) {
+        playFromRect = handEl.getBoundingClientRect();
+      } else {
+        // 실제 카드를 못 찾았다 -- 대개 AI(또는 상대)가 자기 손패에서 낸
+        // 경우로, 내용이 가려진 뒷면 더미(#opp-hand-cards)라 uid로 못
+        // 찾는다. 정확한 카드 위치는 알 수 없으니, 지금(카드가 아직
+        // 빠지기 전) 그 더미의 맨 끝 카드-백을 "출발점"으로 근사한다 --
+        // 어차피 전부 똑같은 뒷면이라 어느 걸 골라도 시각적으로 동일하다.
+        const oppBox = document.querySelector("#opp-hand-cards");
+        if (oppBox && oppBox.lastElementChild) {
+          playFromRect = oppBox.lastElementChild.getBoundingClientRect();
+        } else if (oppBox) {
+          playFromRect = oppBox.getBoundingClientRect();
+        }
+      }
+    }
+  }
+
   render(state);
 
   if (state.error) {
@@ -544,13 +576,29 @@ async function handleState(state, mySeq) {
     } else if (ev.kind === "compileStart" || ev.kind === "compileFlip") {
       animateCompileFill(ev.player, ev.line);
       await sleep(950 * aiTurnPace);
-    } else {
+    } else if (ev.kind === "flip" && ev.uid) {
+      animateCardFlip(ev.uid);
+      const dur = Math.max(800, (state.pending.dur || 0.3) * 1000) * aiTurnPace;
+      await sleep(dur);
+    } else if ((ev.kind === "playFaceUp" || ev.kind === "playFaceDown") && ev.uid) {
+      if (playFromRect) animatePlayFromHand(ev.uid, playFromRect);
+      const base = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
+      const flightFloor = playFromRect ? 460 : 0;
+      const paced = turnPlayer && turnPlayer.isAI ? Math.max(650, base * aiTurnPace) : base;
+      await sleep(Math.max(flightFloor, paced));
+    } else if (ev.kind === "draw" && ev.uid) {
+      if (playFromRect) animateDrawFromDeck(ev.uid, playFromRect);
       // 리프레시로 인한 첫 뽑기 -- refresh()가 emit하는 "draw" 이벤트 중,
       // i18n.key가 "ev.refresh"인 게 바로 그 시작 신호(리프레시 전체를
       // 통틀어 딱 한 번만 붙음, engine.py의 refresh_log() 참고).
-      if (ev.kind === "draw" && ev.i18n && ev.i18n.key === "ev.refresh") {
+      if (ev.i18n && ev.i18n.key === "ev.refresh") {
         showRefreshBanner(ev.player);
       }
+      const base = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
+      const flightFloor = playFromRect ? 420 : 0;
+      const paced = turnPlayer && turnPlayer.isAI ? Math.max(650, base * aiTurnPace) : base;
+      await sleep(Math.max(flightFloor, paced));
+    } else {
       const base = Math.max(300, (state.pending.dur || 0.3) * 1000 * 0.6);
       // AI 턴은 바닥값도 따로 올린다 -- base 자체가 아주 작은 이벤트(예:
       // dur=0.3 미만)는 *2.3을 해도 여전히 눈 깜짝할 새에 지나갈 수 있어서.
@@ -848,6 +896,64 @@ function animateProtocolSwap(playerPi, moves) {
       toPill.style.boxShadow = "";
     }, 480);
   });
+}
+
+// 카드 한 장이 뒤집힐 때(앞<->뒷면) 도는 것처럼 보이게 한다. render(state)가
+// 이미 새 면으로 다시 그려둔 뒤라 그 엘리먼트에 "뒤집는 중" 클래스를 잠깐
+// 얹기만 하면 된다(카드가 자리를 옮기는 게 아니라 제자리에서 도는 효과라
+// animateProtocolSwap 같은 FLIP 기법은 필요 없음).
+function animateCardFlip(uid) {
+  const el = document.querySelector(`.board-card[data-uid="${uid}"]`);
+  if (!el) return;
+  el.classList.remove("card-flip");
+  void el.offsetWidth; // 강제 리플로우 -- 연속 뒤집기(Chaos_0 등)에서도 매번 처음부터 재생되게
+  el.classList.add("card-flip");
+  setTimeout(() => el.classList.remove("card-flip"), 800);
+}
+
+// 엘리먼트가 fromRect 위치에서 지금(render() 이후) 자리로 날아온 것처럼
+// 보이게 한다(FLIP 기법, animateProtocolSwap과 동일한 요령) -- 손패->필드,
+// 덱->손패, 덱->필드 전부 이 헬퍼 하나를 공유한다.
+function flyElementFrom(el, fromRect) {
+  if (!el || !fromRect) return;
+  const toRect = el.getBoundingClientRect();
+  const dx = fromRect.left - toRect.left;
+  const dy = fromRect.top - toRect.top;
+  if (!dx && !dy) return;
+  el.style.transition = "none";
+  el.style.transform = `translate(${dx}px, ${dy}px) scale(0.82)`;
+  el.style.opacity = "0.6";
+  el.style.zIndex = "6";
+  el.style.boxShadow = "0 0 16px var(--phosphor-glow)";
+  void el.offsetWidth;
+  requestAnimationFrame(() => {
+    el.style.transition = "transform .42s cubic-bezier(.22,.8,.28,1), opacity .3s, box-shadow .42s";
+    el.style.transform = "translate(0, 0) scale(1)";
+    el.style.opacity = "1";
+    el.style.boxShadow = "none";
+  });
+  setTimeout(() => {
+    el.style.transition = "";
+    el.style.transform = "";
+    el.style.opacity = "";
+    el.style.zIndex = "";
+    el.style.boxShadow = "";
+  }, 450);
+}
+
+// 손패 카드를 냈을 때 그 카드가 손(또는 덱, fromDeck 플레이)에서 필드
+// 자리까지 날아가는 것처럼 보이게 한다. fromRect는 render() 이전에
+// 캡처해둔 시작 위치 -- 없으면 호출 자체를 안 한다.
+function animatePlayFromHand(uid, fromRect) {
+  flyElementFrom(document.querySelector(`#lines-row [data-uid="${uid}"]`), fromRect);
+}
+
+// 카드를 뽑았을 때 덱(#deck-p{pi})에서 손패 자리까지 날아오는 것처럼
+// 보이게 한다. 지금 화면에 보이는 손패(주로 자기 자신)로 뽑을 때만
+// 목적지 엘리먼트를 찾을 수 있다 -- 상대/AI 손패는 뒷면 더미로만
+// 표시되니(uid로 특정 카드를 못 찾음) 자연히 생략된다.
+function animateDrawFromDeck(uid, fromRect) {
+  flyElementFrom(document.querySelector(`#hand-cards [data-uid="${uid}"]`), fromRect);
 }
 
 function protoPill(state, pi, line, rearrangeReq) {

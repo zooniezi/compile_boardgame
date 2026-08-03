@@ -952,7 +952,7 @@ class Engine:
             if not c:
                 break
             got += 1
-            self.emit("draw", {"player": pi, "n": 1, "dur": MOVE_STAGGER,
+            self.emit("draw", {"player": pi, "n": 1, "uid": c.uid, "dur": MOVE_STAGGER,
                                 "i18n": ({"key": "ev.draw", "params": {
                                     "p": pi, "n": n, "source": self._source_param()}}
                                          if got == 1 else None)})
