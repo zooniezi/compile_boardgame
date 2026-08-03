@@ -27,6 +27,7 @@ from src.game.ai_random import RandomAI
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_ismcts_learned import ISMCTSLearnedAI
 from src.game.ai_ismcts_mlp import ISMCTSMLPAI
+from src.game.ai_ismcts_policy import load_policy_weights
 from src.game.engine import Engine
 from src.game import protocols as Protocols
 from src.game.card_text import CARD_TEXT, PROTOCOL_NAME_KO, PROTOCOL_TAGLINE, PROTOCOL_VERBS
@@ -47,6 +48,13 @@ def asset_url(filename):
     except OSError:
         v = 0
     return f"{url_for('static', filename=filename)}?v={v}"
+
+# "ismcts"/"ismcts_mlp" 난이도의 ISMCTS 루트 결정에 쓰는 학습된 정책
+# (PUCT 사전확률, 260803_ai_lua_vs_python_analysis.md 3단계). 앱 시작 시
+# 한 번만 로드해서 재사용 -- load_policy_weights()가 경로별로 캐시하므로
+# 여러 번 불러도 안전하지만 굳이 매 요청마다 부를 필요는 없다.
+POLICY_WEIGHTS = load_policy_weights(
+    str(Path(__file__).resolve().parent.parent / "src" / "game" / "data" / "policy_weights.npz"))
 
 # game_id -> {"engine": Engine, "lock": threading.Lock()}
 GAMES = {}
@@ -311,9 +319,9 @@ def new_game():
 
     def make_ai_module():
         if ai_difficulty == "ismcts_mlp":
-            return ISMCTSMLPAI()
+            return ISMCTSMLPAI(policy_w=POLICY_WEIGHTS)
         if ai_difficulty == "ismcts":
-            return ISMCTSLearnedAI()
+            return ISMCTSLearnedAI(policy_w=POLICY_WEIGHTS)
         if ai_difficulty == "heuristic":
             return HeuristicAI()
         return RandomAI()

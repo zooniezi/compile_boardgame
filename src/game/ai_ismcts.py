@@ -8,11 +8,11 @@ Engine.ai_modules[pi] = ISMCTSAI()로 꽂으면 동작한다. RandomAI/Heuristic
 핵심 아이디어(2026-08-03 개편): "action"(카드 플레이/리프레시) 결정뿐 아니라,
 그 액션이 여는 "내"(pi0) 하위 결정(chooseCard/chooseLine/chooseOption/
 chooseHandCards/planRearrange/yesno) 전부를 같은 트리에서 UCB1으로 분기한다
--- 참고용 Lua 구현(ai_mcts.lua)의 candidatesFor()/keyOf()/select-expand-
-rollout 한 방 루프를 그대로 옮긴 구조다. 이 파일 안에서 "Lua:"로 시작하는
-주석은 그 대응 관계를 표시한다. 상대(opponent)의 프롬프트와, 분기하기엔
-후보가 너무 많거나(>_NODE_CAND_CAP) 모양이 안 맞는 프롬프트는 여전히
-롤아웃 정책(기본 HeuristicAI)이 즉답한다.
+-- candidatesFor()로 후보를 만들고, select(트리를 따라 UCB로 내려가다가
+처음 보는 정보집합에서 expand) -> rollout을 한 방 루프로 도는 구조다.
+상대(opponent)의 프롬프트와, 분기하기엔 후보가 너무 많거나
+(>_NODE_CAND_CAP) 모양이 안 맞는 프롬프트는 여전히 롤아웃 정책(기본
+HeuristicAI)이 즉답한다.
 
 매 반복(iteration)마다 Engine.clone_at_decision()으로 새 클론을 만들고
 ai_sim.determinize()로 숨은 정보(상대 손패, 상대 덱 순서, 상대 소유 뒷면
@@ -26,25 +26,27 @@ backpropagate를 한 번 수행한다.
 구성한다 -- 상대 차례 노드라고 해서 상대의 (결정화로 가정한 가상의)
 손패를 키에 넣으면, 반복마다 다른 가상 손패가 서로 다른 노드로 쪼개져
 트리 재사용이 무너진다.
-
-포팅 원본: ai_mcts.lua(설계와 select-expand-rollout 구조), ai_ismcts_plan.md
-(원래 액션 전용 골격).
 """
 
 import math
 
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_sim import determinize, evaluate, DECLINE
+from src.game.ai_ismcts_policy import action_scores
 
-# 한 반복(select+expand+rollout 전체)의 무한 진행을 막는 안전장치. Lua
-# ai_mcts.lua의 `while guard < 8000`과 동일한 상수 -- 예전엔 선택 단계
-# (_MAX_SELECTION_DEPTH=500)와 롤아웃 단계(_ROLLOUT_GUARD=8000)가 따로
-# 있었지만, 이번 개편으로 한 루프가 됐으니 가드도 하나로 합친다.
+# 정책이 낮게 평가한 후보도 PUCT 탐색에서 완전히 죽지 않고(사전확률이
+# 0에 가까워도 최소 이 비율은 남아) 계속 탐색 가능하게 균등분포를 5%
+# 섞는다.
+_POLICY_UNIFORM_MIX = 0.05
+
+# 한 반복(select+expand+rollout 전체)의 무한 진행을 막는 안전장치 --
+# 예전엔 선택 단계(_MAX_SELECTION_DEPTH=500)와 롤아웃 단계
+# (_ROLLOUT_GUARD=8000)가 따로 있었지만, 이번 개편으로 한 루프가 됐으니
+# 가드도 하나로 합친다.
 _ROLLOUT_GUARD = 8000
-# 하위 결정 노드 하나가 가질 수 있는 최대 분기 수 (Lua의 NODE_CAND_CAP과
-# 동일). 이보다 후보가 많으면(예: 전체 보드 카드 중 아무거나) 트리에 안
-# 넣고 롤아웃 정책이 즉답 -- 클론 재생 비용이 지배적이라 무제한 분기는
-# 감당이 안 된다.
+# 하위 결정 노드 하나가 가질 수 있는 최대 분기 수. 이보다 후보가 많으면
+# (예: 전체 보드 카드 중 아무거나) 트리에 안 넣고 롤아웃 정책이 즉답 --
+# 클론 재생 비용이 지배적이라 무제한 분기는 감당이 안 된다.
 _NODE_CAND_CAP = 12
 
 
@@ -53,8 +55,8 @@ def _other(pi):
 
 
 def _answer_key(v):
-    """분기 후보 답변 하나를 해시 가능한 키로 압축한다 (Lua ai_mcts.lua의
-    keyOf() 대응). 답변은 네 가지 모양뿐이다: action 딕셔너리(kind 필드로
+    """분기 후보 답변 하나를 해시 가능한 키로 압축한다. 답변은 네 가지
+    모양뿐이다: action 딕셔너리(kind 필드로
     식별), 재배치 plan 딕셔너리(who+order), chooseHandCards의 uid
     리스트, 그 외 원시 스칼라(bool/int/str) -- DECLINE 센티널도 별도
     분기."""
@@ -74,13 +76,12 @@ def _answer_key(v):
 
 
 def _candidates_for(sim, req):
-    """지금 멈춰있는 프롬프트에 대해 분기할 후보 답변 목록을 만든다 (Lua
-    ai_mcts.lua의 candidatesFor() 대응). 분기 불가능한 모양이면 None --
-    호출부가 롤아웃 정책으로 즉답 처리한다.
+    """지금 멈춰있는 프롬프트에 대해 분기할 후보 답변 목록을 만든다.
+    분기 불가능한 모양이면 None -- 호출부가 롤아웃 정책으로 즉답 처리한다.
 
     "action"은 legal_actions() 전부를 후보로 쓴다(이 프로젝트 전반의
-    관례대로 상위-K 컷 없음, Lua의 policy.actionCandidates 캡과는 다른
-    지점). 나머지 타입은 _NODE_CAND_CAP으로 후보 수를 제한한다 -- 클론
+    관례대로 상위-K 컷 없음). 나머지 타입은 _NODE_CAND_CAP으로 후보 수를
+    제한한다 -- 클론
     재생 비용이 지배적이라 "판 전체 카드 중 아무거나" 같은 프롬프트를
     무제한 분기할 수는 없다."""
     t = req["type"]
@@ -96,9 +97,8 @@ def _candidates_for(sim, req):
     elif t == "chooseHandCards":
         # 다중 선택(count != 1)은 조합이 폭발하니 분기 대상에서 제외 --
         # ai_prior.simDecide 계열 sub-decision sim들도 동일하게 제외.
-        # 주의: `req.get("count") or 1`처럼 Lua의 `req.count or 1` 관용구를
-        # 그대로 옮기면 안 된다 -- Lua는 0이 참(truthy)이라 그 관용구가
-        # 통하지만, 파이썬은 0이 falsy라 명시적 min=0/count=0을 조용히
+        # 주의: `req.get("count") or 1`처럼 "or 1"로 기본값을 잡으면 안
+        # 된다 -- 파이썬은 0이 falsy라 명시적 min=0/count=0을 조용히
         # 기본값으로 덮어써버린다. 반드시 .get(key, default)로 판별한다.
         if req.get("count", 1) != 1:
             return None
@@ -246,6 +246,50 @@ def _select_ucb1(node, sim, keys, pi0, c_ucb):
     return best_key
 
 
+def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
+                  uniform_mix=_POLICY_UNIFORM_MIX):
+    """루트 노드 전용 선택 규칙 -- "학습된 루트 정책"이라는 이름 그대로,
+    트리 안 깊은 노드는 여전히 `_select_ucb1`을 쓰고 이 함수는 루트에서만
+    호출된다.
+
+    U = Q + c_ucb * P(a) * sqrt(ΣN) / (1+n) (AlphaZero식 PUCT). 학습된
+    정책의 softmax(+uniform_mix)를 사전확률 P(a)로 쓴다. 미방문 후보의
+    Q는 0이 아니라 0.5(First-Play-Urgency)로 잡는다 -- 핵심 버그 픽스:
+    Q=0으로 두면 첫 평가된 자식이 형제 후보를 전부 굶겨서 탐색이
+    붕괴한다(4.8%까지 승률 추락 실측 기록).
+
+    `_select_ucb1`과 달리 "미방문 우선" 규칙이 없다 -- PUCT의 U항 자체가
+    n=0일 때 분모가 1이라 자연히 큰 보너스를 줘서 미방문 후보를 우대하므로
+    별도 처리가 필요 없다."""
+    if not keys:
+        return None
+    scores = action_scores(sim, node.chooser, cands, policy_w)
+    m = max(scores)
+    exp = [math.exp(s - m) for s in scores]
+    total_exp = sum(exp)
+    n_cand = len(cands)
+    prior = {
+        k: (1 - uniform_mix) * (e / total_exp) + uniform_mix / n_cand
+        for k, e in zip(keys, exp)
+    }
+
+    sign = 1.0 if node.chooser == pi0 else -1.0
+    # max(1, ...): 첫 방문(전체 N=0)일 때 분자를 0으로 두면 모든 후보의
+    # U항이 0이 돼 사전확률과 무관하게 keys 나열 순서로 결정론적 편향이
+    # 생긴다 -- AlphaZero류 구현의 통상 관례대로 총 방문수를 최소 1로
+    # 잡아, 첫 방문은 사전확률이 가장 큰 후보를 고르도록 한다.
+    sqrt_total = math.sqrt(max(1, sum(node.N.get(k, 0) for k in keys)))
+    best_key, best_score = None, None
+    for k in keys:
+        n = node.N.get(k, 0)
+        q = sign * node.W[k] / n if n > 0 else 0.5
+        u = c_ucb * prior[k] * sqrt_total / (1 + n)
+        score = q + u
+        if best_score is None or score > best_score:
+            best_score, best_key = score, k
+    return best_key
+
+
 def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
     """항상 pi0 시점 스칼라. 이 엔진에 무승부는 없다(resolve_stalemate가
     끝까지 동률이면 승자를 강제 배정) -- sim.winner가 None이면 그건
@@ -259,17 +303,25 @@ def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
     return math.tanh(score / eval_scale)
 
 
-def _run_iteration(g, pi0, nodes, rollout_policy, c_ucb, horizon_turn,
+def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
+                    nodes, rollout_policy, c_ucb, horizon_turn,
                     eval_fn, eval_w, eval_scale, salt):
     """ISMCTS 반복 한 번: select(트리를 따라 UCB로 내려가다가 처음 보는
     정보집합에서 expand) -> rollout(그 뒤로는 rollout_policy가 흘려보냄)을
-    한 방 루프로 수행한다 (Lua ai_mcts.lua M.pick()의 반복 본문과 동일한
-    구조 -- Lua는 `inTree` 플래그로 "아직 트리 안"과 "확장 후 롤아웃"을
-    가르는데, 여기서도 `in_tree` 변수가 똑같은 역할을 한다).
+    한 방 루프로 수행한다. `in_tree` 플래그로 "아직 트리 안"과 "확장 후
+    롤아웃"을 가른다.
 
-    분기 대상: "action" 타입은 항상, 그 외 타입은 req["chooser"] == pi0일
-    때만(내 하위 결정만 -- 상대의 카드 선택/라인 선택 등은 상대의 정보라
-    분기하지 않고 롤아웃 정책이 대신 답한다, Lua의 기본 동작과 동일).
+    분기 대상: `sim.turn_count == my_turn`(지금 이 턴)이고 `req["chooser"]
+    == pi0`(내 결정)일 때만 -- 상대 턴이나 내 다음 턴 이후까지 분기하지
+    않는다는 뜻이다. 액션이든 하위 결정이든 이 조건 하나로 통일해서
+    gate한다.
+
+    2026-08-03 첫 구현은 이 turn_count 제약이 없어서 "지금 이 턴"을 넘어
+    여러 턴·양쪽 플레이어의 액션까지 계속 트리에 편입시켰는데(2단계 이전
+    트리가 원래 그렇게 설계돼 있었음), 그 위에 하위결정 분기까지 얹으니
+    트리가 심하게 희석돼(arena 실측 73~80% 퇴보) 반복 수를 늘려도 회복이
+    안 됐다. 이번 수정으로 범위를 좁힌다 -- 상대 턴과 내 다음 턴은 전부
+    롤아웃 정책이 답한다.
 
     반환: (path, value) -- path는 역전파용 [(node, key), ...],
     value는 이 반복의 보상(pi0 시점, _reward()가 승부 확정/미확정 양쪽을
@@ -294,7 +346,7 @@ def _run_iteration(g, pi0, nodes, rollout_policy, c_ucb, horizon_turn,
                 break
 
             cands = None
-            if in_tree and (req["type"] == "action" or req["chooser"] == pi0):
+            if in_tree and sim.turn_count == my_turn and req["chooser"] == pi0:
                 cands = _candidates_for(sim, req)
 
             if cands is not None:
@@ -309,7 +361,11 @@ def _run_iteration(g, pi0, nodes, rollout_policy, c_ucb, horizon_turn,
                     k = _answer_key(v)
                     node.answer_of.setdefault(k, v)
                     keys.append(k)
-                chosen_key = _select_ucb1(node, sim, keys, pi0, c_ucb)
+                if policy_w is not None and key == root_key:
+                    chosen_key = _select_puct(node, sim, keys, cands, pi0, c_ucb,
+                                               policy_w, policy_uniform_mix)
+                else:
+                    chosen_key = _select_ucb1(node, sim, keys, pi0, c_ucb)
                 chosen_val = node.answer_of[chosen_key]
                 path.append((node, chosen_key))
                 _apply_answer(sim, chosen_val)
@@ -324,18 +380,26 @@ def _run_iteration(g, pi0, nodes, rollout_policy, c_ucb, horizon_turn,
 
 
 def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
-            rollout_turn_cap, eval_fn, eval_w, eval_scale):
+            rollout_turn_cap, eval_fn, eval_w, eval_scale,
+            policy_w=None, policy_uniform_mix=_POLICY_UNIFORM_MIX):
     """ISMCTS 본체. 성공하면 legal_actions(pi0)의 원소 하나를 반환하고,
     시뮬레이션이 불가능하면(시드 없음 등) None을 반환한다 -- 호출자는
-    이 경우 휴리스틱 채점으로 폴백해야 한다."""
+    이 경우 휴리스틱 채점으로 폴백해야 한다.
+
+    policy_w(ai_ismcts_policy.load_policy_weights()의 반환값)가 주어지면
+    루트 노드(root_key)의 선택에만 `_select_puct`(학습된 정책 사전확률 +
+    PUCT)를 쓰고, 트리의 나머지 노드는 여전히 `_select_ucb1`이다 --
+    "루트 정책"이라는 이름 그대로 루트에만 적용된다."""
     if iterations <= 0:
         return None
     root_key = _node_key(g, root_req, pi0)
     nodes = {root_key: _Node(chooser=pi0)}
+    my_turn = g.turn_count
     horizon_turn = g.turn_count + rollout_turn_cap
 
     for i in range(iterations):
-        path, value = _run_iteration(g, pi0, nodes, rollout_policy, c_ucb,
+        path, value = _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
+                                      nodes, rollout_policy, c_ucb,
                                       horizon_turn, eval_fn, eval_w, eval_scale, salt=i)
         if path is None:
             return None  # 클론 불가(시드 없음 등) -- 호출자가 휴리스틱으로 폴백
@@ -372,15 +436,26 @@ class ISMCTSAI(HeuristicAI):
     가장 빠르다(4는 38.4초, 12는 28.8초). 승률이 표본을 늘려도 유지
     되는지는 아직 확정 전이니 신뢰도는 중간 정도로 볼 것.
 
-    2026-08-03: 하위 결정 분기를 추가한 뒤 이 튜닝(rollout_turn_cap 등)이
-    여전히 최선인지는 재검증하지 않았다 -- 트리가 커진 만큼 반복 예산
-    (iterations) 대비 노드당 통계가 희석될 수 있어(Lua의 oppInTree가
-    같은 이유로 꺼져 있는 것과 동일한 리스크), 병합 전 arena 재측정
-    필요."""
+    2026-08-03: 하위 결정 분기를 처음 추가했을 때는 범위 제한이 없어서
+    "이번 턴"을 넘어 여러 턴·양쪽 플레이어의 액션까지 계속 트리에
+    편입됐다 -- arena 실측 결과 OldISMCTS(하위 결정 분기 없음) 상대
+    73~80% 퇴보(iterations=100/200 둘 다 유의미)였다. 원인은 하위 결정
+    분기를 얹기 전부터 트리가 여러 턴·양쪽 플레이어를 분기하도록 애초에
+    넓게 설계돼 있었던 것 -- `_run_iteration()`에 `my_turn` 게이트를
+    추가해 "지금 이 턴, 내 결정만"으로 좁혔다. 이 재설계 이후
+    rollout_turn_cap 등 기존 튜닝이 여전히 최선인지는 재검증 필요
+    (iterations=200 기준 arena 재측정으로 격차 80.0%->73.3%->66.7%까지는
+    줄었으나 완전히 해소되진 않음).
+
+    policy_w(3단계, 2026-08-03): scripts/train_policy.py로 학습한 "루트
+    정책"(ai_ismcts_policy.load_policy_weights()의 반환값)을 주면 루트
+    노드의 후보 선택에 `_select_puct`(PUCT + 학습된 사전확률)를 쓴다.
+    None이면(기본값) 예전처럼 루트도 순수 UCB1 -- 하위 호환."""
 
     def __init__(self, iterations=200, c_ucb=1.41, rollout_policy=None,
                  rollout_turn_cap=2, eval_fn=evaluate, eval_w=None,
-                 eval_scale=200.0):
+                 eval_scale=200.0, policy_w=None,
+                 policy_uniform_mix=_POLICY_UNIFORM_MIX):
         self.iterations = iterations
         self.c_ucb = c_ucb
         # 롤아웃/선택 단계의 하위 결정을 대신 답하는 정책. 절대 self(또는
@@ -392,6 +467,8 @@ class ISMCTSAI(HeuristicAI):
         self.eval_fn = eval_fn
         self.eval_w = eval_w
         self.eval_scale = eval_scale
+        self.policy_w = policy_w
+        self.policy_uniform_mix = policy_uniform_mix
 
     def decide(self, g, req):
         if req.get("type") == "action":
@@ -401,7 +478,8 @@ class ISMCTSAI(HeuristicAI):
                 return acts[0] if acts else None
             best = _search(g, pi0, req, self.iterations, self.c_ucb,
                             self.rollout_policy, self.rollout_turn_cap,
-                            self.eval_fn, self.eval_w, self.eval_scale)
+                            self.eval_fn, self.eval_w, self.eval_scale,
+                            self.policy_w, self.policy_uniform_mix)
             if best is not None:
                 return best
             # 클론 불가(시드 없음) 등 -- 안전하게 휴리스틱 채점으로 폴백

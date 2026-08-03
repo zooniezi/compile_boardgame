@@ -35,8 +35,8 @@ def _other(pi):
 # 로드맵 우선순위(260803_ai_lua_vs_python_analysis.md §7 1단계)를 따른다.
 # 아직 여기 없는 카드(Pride_0, Fulcrum_1, Nova_3, Momentum_4 등)는 전부
 # "다른 카드를 라인 사이에서 옮기는" 효과라 일반화된 shift/move verb
-# 프라이서(Lua의 shiftPrior/shiftCardValue/bestShiftWhere에 대응하는
-# 인프라)가 아직 없어서 그 인프라부터 먼저 갖춘 뒤로 미뤘다.
+# 프라이서(shiftPrior/shiftCardValue/bestShiftWhere 같은 인프라)가 아직
+# 없어서 그 인프라부터 먼저 갖춘 뒤로 미뤘다.
 # ---------------------------------------------------------------------------
 
 def _control_gain_value(g, pi):
@@ -369,7 +369,7 @@ def _wrath_1(g, pi, card, line, hand_after):
     """Wrath_1: 뽑기 1은 무조건(태그의 draw=1로 이미 반영). finish는
     지금 Control을 쥔 상태일 때만 그걸 포기하고 앞면 카드 1장을
     제거한다(carddefs.py `_wrath_1_finish`) -- Control 포기 비용은
-    Lua 쪽 실측 상수(-1.2)를 그대로 재사용."""
+    실측 상수(-1.2)를 그대로 재사용."""
     if g.control != pi:
         return 0.0
     return _del_prior(g, pi, {"n": 1}) - 1.2
@@ -492,9 +492,9 @@ def _rigid_7(g, pi, card, line, hand_after):
     """Rigid_7: cantFlip+cantMove라 스스로를 절대 숨길 수 없고, finishTop이
     (carddefs.py `_rigid_7_finish_top`) 매 턴 상대에게 공짜 뽑기 또는
     플레이를 준다 -- 인쇄값 7 뒤에 숨은 심각한 지속 부채. 여기서는 "이번
-    턴 즉시" 상대가 받는 선물만 값매기고(가장 큰 항목을 취함, Lua의
-    oppPlayOrDrawPrior와 같은 스케일: freePlay=2.5, drawCard=0.7),
-    이후 매 턴 반복되는 부채는 TAGS의 ongoing=-2.5(숫자 오버라이드)가
+    턴 즉시" 상대가 받는 선물만 값매기고(가장 큰 항목을 취함,
+    freePlay=2.5, drawCard=0.7 스케일), 이후 매 턴 반복되는 부채는
+    TAGS의 ongoing=-2.5(숫자 오버라이드)가
     별도로 반영한다."""
     o = _other(pi)
     can_play = len(g.players[o]["hand"]) > 0
@@ -507,7 +507,7 @@ def _rigid_7(g, pi, card, line, hand_after):
 
 
 # ---------------------------------------------------------------------------
-# 4차 배치 (2026-08-03) -- Lua 원본을 카드별로 재대조해보니, 이미 갖춘
+# 4차 배치 (2026-08-03) -- 카드별로 재검토해보니, 이미 갖춘
 # 인프라(_control_gain_value/_best_flip_where/_best_shift_where/_del_prior/
 # _ret_prior/투영 계산)만으로 바로 이식 가능한데 놓쳤던 카드들.
 # ---------------------------------------------------------------------------
@@ -534,7 +534,7 @@ def _lust_4(g, pi, card, line, hand_after):
 def _wrath_4(g, pi, card, line, hand_after):
     """Wrath_4: 지금 내가 Control을 쥔 상태일 때만, 그걸 포기하고 상대가
     2장 버리게 한다(carddefs.py `_wrath_4_play`) -- Control 포기 비용은
-    Wrath_1과 동일한 Lua 실측 상수(-1.2) 재사용."""
+    Wrath_1과 동일한 실측 상수(-1.2) 재사용."""
     if g.control != pi:
         return 0.0
     d = min(2, len(g.players[_other(pi)]["hand"]))

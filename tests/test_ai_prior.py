@@ -191,8 +191,7 @@ def test_rigid_7_immediate_gift_scales_with_opponent_capability():
 # ---------------------------------------------------------------------------
 
 def test_gluttony_0_now_uses_generic_ret_and_draw_verbs():
-    """새 fn 없이 기존 ret/draw generic verb만으로 풀리는 카드 -- Lua도
-    fn 없이 이 두 verb로만 채점한다."""
+    """새 fn 없이 기존 ret/draw generic verb만으로 풀리는 카드."""
     assert TAGS["Gluttony_0"]["ret"] == {}
     assert TAGS["Gluttony_0"]["draw"] == 1
     e = Engine(protocols1=["Gluttony", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])

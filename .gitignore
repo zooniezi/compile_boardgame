@@ -7,3 +7,6 @@ __pycache__/
 
 selfplay_5000.npz
 src/game/data/selfplay_gen3.npz
+
+
+*.md

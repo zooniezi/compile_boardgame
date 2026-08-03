@@ -173,8 +173,8 @@ def evaluate_learned(g, pi, w=None):
     w는 반드시 load_eval_weights()가 반환한 (coef, intercept)여야 한다.
     coef 길이가 원본 특징 수(feature_count())와 다르면 -- 즉 교차항까지
     확장해서 학습한 가중치라면 -- expand_features()를 자동으로 적용한다
-    (Lua의 evaluateLearned가 "학습된 가중치 개수로 plain vs 확장 모델을
-    고른다"는 것과 동일한 방식, ai_train_pipeline.md §1.3 참고)."""
+    ("학습된 가중치 개수로 plain vs 확장 모델을 고른다"는 방식,
+    ai_train_pipeline.md §1.3 참고)."""
     if w is None:
         raise ValueError(
             "evaluate_learned은 eval_w=load_eval_weights(path)와 함께 써야 함")

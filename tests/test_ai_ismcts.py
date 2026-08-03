@@ -21,11 +21,15 @@ import math
 import random
 import threading
 
+import numpy as np
+
 from src.game.engine import Engine
 from src.game.ai_ismcts import (
-    ISMCTSAI, _Node, _select_ucb1, _answer_key, _node_key, _reward,
+    ISMCTSAI, _Node, _select_ucb1, _select_puct, _answer_key, _node_key, _reward,
     _candidates_for, _run_iteration,
 )
+from src.game.ai_features import feature_count as state_feature_count
+from src.game.ai_action_features import feature_count as action_feature_count
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_random import RandomAI
 from src.game.ai_sim import evaluate, DECLINE
@@ -303,8 +307,7 @@ def test_control_rearrange_path_does_not_crash():
 
 
 # ---------------------------------------------------------------------------
-# 9. _candidates_for -- 하위 결정 분기 후보 생성 (Lua ai_mcts.lua의
-#    candidatesFor() 대응, 2026-08-03 개편으로 신설)
+# 9. _candidates_for -- 하위 결정 분기 후보 생성 (2026-08-03 개편으로 신설)
 # ---------------------------------------------------------------------------
 
 def test_candidates_for_yesno_is_always_true_false():
@@ -365,7 +368,7 @@ def test_candidates_for_unbranchable_types_return_none():
 
 
 # ---------------------------------------------------------------------------
-# 10. _answer_key -- 분기 답변 종류별 키 (Lua ai_mcts.lua의 keyOf() 대응)
+# 10. _answer_key -- 분기 답변 종류별 키
 # ---------------------------------------------------------------------------
 
 def test_answer_key_distinguishes_every_shape():
@@ -419,3 +422,117 @@ def test_sub_decision_branching_is_actually_exercised_during_real_play():
         ai_ismcts_module._candidates_for = orig
 
     assert branched_types, "6판 동안 action 이외의 하위 결정이 한 번도 분기되지 않음"
+
+
+# ---------------------------------------------------------------------------
+# 12. _select_puct -- 3단계 학습된 루트 정책(PUCT). action_scores(ai_ismcts_
+#     policy.py)를 몽키패치해서 신경망 없이 PUCT 수식 자체(사전확률 반영,
+#     FPU=0.5, uniform_mix)만 검증한다.
+# ---------------------------------------------------------------------------
+
+import src.game.ai_ismcts as ai_ismcts_module
+
+
+def _three_actions():
+    return [
+        {"kind": "play", "uid": 1, "line": 1, "faceUp": True},
+        {"kind": "play", "uid": 2, "line": 1, "faceUp": True},
+        {"kind": "play", "uid": 3, "line": 1, "faceUp": True},
+    ]
+
+
+def test_select_puct_prefers_highest_prior_action_when_all_unvisited(monkeypatch):
+    """전부 미방문(N=0)이면 Q는 셋 다 FPU=0.5로 동률이라, 사전확률(softmax
+    logit)이 가장 큰 후보가 이겨야 한다."""
+    actions = _three_actions()
+    keys = [_answer_key(a) for a in actions]
+    node = _Node(chooser=1)
+    node.answer_of = dict(zip(keys, actions))
+
+    monkeypatch.setattr(ai_ismcts_module, "action_scores",
+                         lambda sim, pi, acts, w: [0.0, 5.0, -5.0])
+    picked = _select_puct(node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41,
+                           policy_w=object())
+    assert picked == keys[1]
+
+
+def test_select_puct_uses_fpu_half_not_zero_for_unvisited():
+    """핵심 버그 픽스 회귀: 미방문 후보의 Q를 0으로 두면
+    첫 평가된 자식(음의 보상)이 형제를 다 굶긴다. 여기서는 이미 방문됐고
+    평균 보상이 뚜렷하게 음수인(-0.9) 후보 하나와, 아직 미방문인 후보
+    둘을 두고, 두 정책 모두(사전확률이 완전히 균등이라 uniform_mix로 켜서
+    prior 차이가 없게 만듦) U항이 같다면 미방문 쪽이 FPU=0.5로 시작해
+    방문한 나쁜 후보(-0.9)보다 항상 우선돼야 한다."""
+    actions = _three_actions()
+    keys = [_answer_key(a) for a in actions]
+    node = _Node(chooser=1)
+    node.answer_of = dict(zip(keys, actions))
+    node.visits = 20
+    node.N = {keys[0]: 20}
+    node.W = {keys[0]: -18.0}  # 평균 -0.9
+
+    def _flat_scores(sim, pi, acts, w):
+        return [0.0, 0.0, 0.0]  # 사전확률이 완전히 균등하도록
+
+    orig = ai_ismcts_module.action_scores
+    ai_ismcts_module.action_scores = _flat_scores
+    try:
+        picked = _select_puct(node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41,
+                               policy_w=object())
+    finally:
+        ai_ismcts_module.action_scores = orig
+    # keys[1]/keys[2]는 미방문(Q=FPU=0.5), keys[0]은 방문했지만 Q=-0.9 --
+    # 어느 미방문 쪽이 뽑히든(균등 prior라 동률) keys[0]만 아니면 통과.
+    assert picked in (keys[1], keys[2])
+
+
+def test_select_puct_only_used_at_root_key_not_deeper_nodes():
+    """_run_iteration은 policy_w가 있어도 root_key와 일치하는 노드에서만
+    _select_puct를 쓰고, 그 외 노드는 여전히 _select_ucb1이어야 한다
+    ("루트 정책"이라는 이름 그대로) -- 실제 대국을 굴리며 두 함수 호출
+    횟수를 계측해 확인한다(하위 결정 분기가 있으니 루트가 아닌 노드도
+    반드시 여러 번 방문됨)."""
+    ucb1_calls, puct_calls = [], []
+    orig_ucb1 = ai_ismcts_module._select_ucb1
+    orig_puct = ai_ismcts_module._select_puct
+
+    def spy_ucb1(*a, **kw):
+        ucb1_calls.append(1)
+        return orig_ucb1(*a, **kw)
+
+    def spy_puct(*a, **kw):
+        puct_calls.append(1)
+        return orig_puct(*a, **kw)
+
+    fake_w = [(
+        np.zeros((state_feature_count() + action_feature_count(), 1)),
+        np.zeros(1),
+    )]
+
+    ai_ismcts_module._select_ucb1 = spy_ucb1
+    ai_ismcts_module._select_puct = spy_puct
+    try:
+        ai = ISMCTSAI(iterations=15, rollout_turn_cap=6, policy_w=fake_w)
+        e = _driven_engine(seed=2, ai_modules={1: ai, 2: HeuristicAI()})
+        assert e.error is None
+    finally:
+        ai_ismcts_module._select_ucb1 = orig_ucb1
+        ai_ismcts_module._select_puct = orig_puct
+
+    assert puct_calls, "policy_w가 있는데 _select_puct가 한 번도 안 불림"
+    assert ucb1_calls, "하위 결정 분기(루트가 아닌 노드)는 여전히 UCB1을 써야 하는데 한 번도 안 불림"
+
+
+def test_ismcts_with_policy_w_none_is_unaffected_baseline():
+    """policy_w=None(기본값)이면 이전과 동일하게 전부 _select_ucb1만 써야
+    한다 -- 하위 호환 회귀."""
+    puct_calls = []
+    orig_puct = ai_ismcts_module._select_puct
+    ai_ismcts_module._select_puct = lambda *a, **kw: puct_calls.append(1) or orig_puct(*a, **kw)
+    try:
+        ai = ISMCTSAI(iterations=15, rollout_turn_cap=6)  # policy_w 생략
+        e = _driven_engine(seed=3, ai_modules={1: ai, 2: HeuristicAI()})
+        assert e.error is None
+    finally:
+        ai_ismcts_module._select_puct = orig_puct
+    assert puct_calls == []
