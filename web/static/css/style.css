@@ -306,6 +306,79 @@ button {
   font-size: 14px;
 }
 
+/* ==========================================================================
+   턴 단계 진행도(phase track): 화면 맨 위에서 "시작->제어->컴파일->행동->
+   캐시 정리->종료" 6단계 중 지금 어디인지 원+연결선으로 보여준다. 텍스트
+   한 줄로 바뀌던 것보다 눈에 훨씬 잘 띄어서, 사방으로 빠르게 넘어가는
+   턴 진행을 플레이어가 놓치지 않고 좇을 수 있게 하는 게 목적.
+   ========================================================================== */
+.phase-track {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0;
+  padding: 8px 16px 7px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line-hair);
+}
+
+.phase-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.phase-node {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-hair);
+  background: var(--bg-card-back);
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+
+.phase-node-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-dim);
+  white-space: nowrap;
+  transition: color .2s;
+}
+
+.phase-connector {
+  width: 34px;
+  height: 2px;
+  background: var(--line-hair);
+  margin-top: 13px; /* 원(28px) 세로 중앙에 맞춤 */
+  flex: 0 1 34px;
+  transition: background .2s;
+}
+
+.phase-step.done .phase-node {
+  border-color: var(--phosphor-dim);
+  background: var(--bg-panel-raised);
+}
+.phase-step.done .phase-node-label { color: var(--phosphor-dim); }
+.phase-connector.done { background: var(--phosphor-dim); }
+
+.phase-step.current .phase-node {
+  border-color: var(--phosphor);
+  box-shadow: 0 0 12px var(--phosphor-glow);
+  background: var(--bg-panel-raised);
+}
+.phase-step.current .phase-node-label { color: var(--phosphor); font-weight: 700; }
+
+@media (max-width: 720px) {
+  .phase-track { padding: 6px 8px 5px; }
+  .phase-node { width: 22px; height: 22px; }
+  .phase-node-label { font-size: 7.5px; }
+  .phase-connector { width: 18px; margin-top: 10px; }
+}
+
 .setup-title {
   font-family: var(--font-display);
   font-weight: 700;
@@ -492,8 +565,16 @@ button {
 
 /* 두 쪽 다 카드는 위->아래 순서로 쌓이되(배열 순서 그대로), 스택 전체는
    프로토콜 띠에 붙어서 시작한다 -- 상대(위쪽)는 띠가 아래에 있으니 아래쪽
-   정렬로, 자신(아래쪽)은 띠가 위에 있으니 위쪽 정렬로 붙인다. */
-.stack-zone.opp-zone { justify-content: flex-end; }
+   정렬로, 자신(아래쪽)은 띠가 위에 있으니 위쪽 정렬로 붙인다.
+   opp-zone은 justify-content: flex-end로 "아래쪽 정렬"을 주면 안 된다 --
+   overflow:auto + flex-end 조합은 내용이 넘칠 때 넘친 쪽(시작 방향)으로
+   스크롤이 안 되는 알려진 브라우저 동작이라(self-zone의 flex-start는
+   이 문제가 없음), 카드가 많아지면 정작 스크롤이 필요한 상대 쪽만 스크롤이
+   막힌다. 대신 self-zone과 똑같이 flex-start를 쓰고, 카드가 적어서 남는
+   여백만 첫 카드의 margin-top:auto로 아래쪽(띠 쪽)에 밀어붙인다 -- 카드가
+   넘치면 auto 마진이 0으로 줄어들어 자연스럽게 위에서부터 정상 스크롤된다. */
+.stack-zone.opp-zone { justify-content: flex-start; }
+.stack-zone.opp-zone .board-card:first-child { margin-top: auto; }
 .stack-zone.self-zone { justify-content: flex-start; }
 
 /* 카드를 낼 수 있는 영역: 낼 카드를 고르면(클릭/드래그) 후보 라인이 밝아진다 */
@@ -1192,7 +1273,11 @@ button {
   aspect-ratio: 3 / 2.2;
   border-radius: 8px;
   border: 1.5px solid var(--card-accent, var(--line-hair));
+  /* --card-art(JS가 카드마다 세팅)이 있으면 그 아트워크를 꽉 채워 깔고,
+     없으면(파일이 아직 없는 프로토콜) 그 레이어만 자동으로 비어서
+     기존 그라디언트가 그대로 보인다 -- 이미지가 일부만 있어도 안전. */
   background:
+    var(--card-art, none) center/cover no-repeat,
     linear-gradient(160deg, color-mix(in srgb, var(--card-accent) 30%, transparent) 0%, transparent 60%),
     repeating-linear-gradient(135deg, color-mix(in srgb, var(--card-accent) 14%, var(--bg-card-back)) 0px,
       color-mix(in srgb, var(--card-accent) 14%, var(--bg-card-back)) 10px,

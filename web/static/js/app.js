@@ -457,6 +457,10 @@ function renderDraftCard(protoId, cur, status) {
   card.className = "draft-card" + (taken ? " taken" : "") + (status === "ban" ? " banned" : "");
   const accent = PROTO.colors[protoId] || "#888";
   card.style.setProperty("--card-accent", accent);
+  // web/static/img/protocols/<영문 프로토콜명>.png가 있으면 그걸 카드
+  // 아트워크로 깐다(없는 프로토콜은 CSS의 --card-art 기본값(none)이 적용돼
+  // 그냥 기존 그라디언트만 보임 -- 이미지를 다 못 채워도 안전).
+  card.style.setProperty("--card-art", `url(/static/img/protocols/${protoId}.png)`);
   const tagline = (PROTO.tagline && PROTO.tagline[protoId]) || "";
   const verbs = (PROTO.verbs && PROTO.verbs[protoId]) || "";
 
@@ -650,6 +654,7 @@ function render(state) {
 
   maybeShowTurnBanner(state);
   renderOppHandPreview(state);
+  renderPhaseTrack(state);
   renderTurnBox(state);
   renderControlMarker(state);
   renderDeckCols(state);
@@ -758,6 +763,32 @@ function phaseLabel(phase) {
   const labels = { setup: "준비", start: "시작", control: "제어", compile: "컴파일",
                    action: "행동", cache: "캐시 정리", end: "종료", over: "게임 종료" };
   return labels[phase] || phase;
+}
+
+// 한 턴이 항상 거치는 6단계(룰북 순서 그대로) -- 컴파일한 턴은 엔진이
+// "action"을 건너뛰지만(그 턴의 유일한 행동이 컴파일이므로), 트랙 자체는
+// 매 턴 같은 6칸으로 고정해서 보여준다: 지금 phase보다 앞선 칸은 전부
+// "done" 취급하면 되므로(건너뛴 action도 compile 다음 시점엔 이미 지난
+// 것으로 자연스럽게 표시됨), 매 턴 다른 모양의 트랙을 그릴 필요가 없다.
+const PHASE_ORDER = ["start", "control", "compile", "action", "cache", "end"];
+
+function renderPhaseTrack(state) {
+  const el = $("#phase-track");
+  const curIdx = PHASE_ORDER.indexOf(state.phase);
+  if (state.winner || curIdx === -1) {
+    el.innerHTML = "";
+    return;
+  }
+  el.innerHTML = PHASE_ORDER.map((phase, i) => {
+    const cls = i < curIdx ? "done" : i === curIdx ? "current" : "";
+    const step = `<div class="phase-step ${cls}">
+        <div class="phase-node"></div>
+        <div class="phase-node-label">${phaseLabel(phase)}</div>
+      </div>`;
+    if (i === PHASE_ORDER.length - 1) return step;
+    const connectorCls = i < curIdx ? "done" : "";
+    return step + `<div class="phase-connector ${connectorCls}"></div>`;
+  }).join("");
 }
 
 function renderTurnBox(state) {
@@ -1061,12 +1092,19 @@ function renderBoardCard(c, state, isUncovered) {
     div.style.setProperty("--card-accent", color);
     const text = (PROTO.cardText && PROTO.cardText[`${c.proto}_${c.value}`]) || {};
     let bandsHtml = "";
-    // 상단(top) 텍스트는 덮여도 항상 활성/표시 (실물 카드 규칙: "Top Command - Persistent").
-    bandsHtml += bandHtml("top", text.top);
-    // 중단/하단은 uncovered일 때만 보임.
     if (isUncovered) {
+      // 드러난 카드는 카드 텍스트를 온전히 다 봐야 하므로 상/중/하 3밴드를
+      // 전부 그린다 -- top이 비어있는 카드(대다수)도 예전처럼 빈 밴드
+      // 자리를 유지한다(텍스트가 아예 없다는 것도 정보이므로).
+      bandsHtml += bandHtml("top", text.top);
       bandsHtml += bandHtml("mid", text.mid);
       bandsHtml += bandHtml("bot", text.bot);
+    } else if (text.top && text.top.length) {
+      // 덮인 카드는 룰북상 top만 보이는데("Top Command - Persistent"),
+      // top 자체가 없는 카드까지 빈 밴드를 그리면 덮인 카드가 쓸데없이
+      // 커져서 스택이 다닥다닥 겹쳐 보이는 대신 뚝뚝 떨어진 빈 상자
+      // 더미처럼 보인다. top이 실제로 있을 때만 그린다(없으면 헤더만).
+      bandsHtml += bandHtml("top", text.top);
     }
     div.innerHTML = `<div class="card-header">
         <span class="card-name">${protoKo(c.proto)}</span><span class="card-num">${c.value}</span>
