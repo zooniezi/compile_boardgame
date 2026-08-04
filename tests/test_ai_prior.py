@@ -29,7 +29,7 @@ from src.game.ai_prior import (
     _overwhelm_6_ongoing, _pride_2_ongoing, _pride_6_ongoing, _sloth_0_ongoing,
     _wrath_1_ongoing, _flexible_2_ongoing, _flexible_4_ongoing,
     _inert_0_ongoing, _inert_1_ongoing, _rigid_1_ongoing, _rigid_2_ongoing,
-    _speed_3_prior, _is_uncovered,
+    _speed_3_prior, _is_uncovered, _covered_after_play,
 )
 from src.game.rules import COMPILE_THRESHOLD
 
@@ -453,6 +453,60 @@ def test_best_shift_where_picks_the_highest_value_candidate():
     e.players[2]["stacks"][2].append(_card(e, "Metal", 5, 2))  # 임계값 이상 -- 4.0
     best = _best_shift_where(e, 1, lambda c: c.owner == 2 and e.is_uncovered(c))
     assert best == pytest.approx(4.0)
+
+
+# ---------------------------------------------------------------------------
+# Fear_0 / Speed_3의 shift 채점 -- 260805_aboutshiftprior.md 버그 수정 회귀.
+# 실제 효과(carddefs.py `_move_one`)는 항상 uncovered 카드만 허용하는데,
+# 예전 필터(Fear_0: `lambda c: True`, Speed_3: `lambda c: c.owner == pi`)엔
+# `_covered_after_play` 배제가 없어서, "지금 낼 라인의 현재 맨 위 카드"
+# (내고 나면 곧 덮여 실제로는 선택 불가능한 카드)까지 후보로 잘못 셌다.
+# ---------------------------------------------------------------------------
+
+def test_fear_0_shift_filter_excludes_the_card_its_own_play_will_cover():
+    """지금 낼 라인(line=1)의 현재 맨 위 카드는 Fear_0를 내고 나면 덮여서
+    실제로는 이동 대상이 될 수 없다 -- 유일한 후보였으므로 결과는 0."""
+    e = Engine(protocols1=["Fear", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    live_below = _card(e, "Fire", 0, 1)
+    e.players[1]["stacks"][1].append(live_below)
+    top_of_play_line = _card(e, "Water", 4, 1)
+    e.players[1]["stacks"][1].append(top_of_play_line)  # 지금 맨 위, 놓일 라인과 동일
+    result = _best_shift_where(
+        e, 1, lambda c: not _covered_after_play(e, c, 1, 1), optional=True)
+    assert result == 0.0  # 예전 버그라면 0.8+0.75=1.55(live_below 재활성화 보너스 포함)
+
+
+def test_fear_0_shift_filter_still_counts_a_card_on_another_line():
+    """다른 라인의 맨 위 카드는 이 플레이로 안 덮이므로 여전히 후보다
+    (배제가 과하게 넓지 않다는 걸 확인하는 대조군)."""
+    e = Engine(protocols1=["Fear", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    live_below = _card(e, "Fire", 0, 1)
+    e.players[1]["stacks"][2].append(live_below)  # 라인 2 -- 놓일 라인(1)과 다름
+    top_of_other_line = _card(e, "Water", 4, 1)
+    e.players[1]["stacks"][2].append(top_of_other_line)
+    result = _best_shift_where(
+        e, 1, lambda c: not _covered_after_play(e, c, 1, 1), optional=True)
+    assert result == pytest.approx(0.8 + 0.75)
+
+
+def test_speed_3_prior_excludes_the_card_its_own_play_will_cover():
+    e = Engine(protocols1=["Speed", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    speed3 = _card(e, "Speed", 3, 1)
+    live_below = _card(e, "Fire", 0, 1)
+    e.players[1]["stacks"][1].append(live_below)
+    top_of_play_line = _card(e, "Water", 4, 1)
+    e.players[1]["stacks"][1].append(top_of_play_line)
+    assert _speed_3_prior(e, 1, speed3, 1, 0) == 0.0  # 예전 버그라면 1.55
+
+
+def test_speed_3_prior_still_counts_a_card_on_another_line():
+    e = Engine(protocols1=["Speed", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    speed3 = _card(e, "Speed", 3, 1)
+    live_below = _card(e, "Fire", 0, 1)
+    e.players[1]["stacks"][2].append(live_below)
+    top_of_other_line = _card(e, "Water", 4, 1)
+    e.players[1]["stacks"][2].append(top_of_other_line)
+    assert _speed_3_prior(e, 1, speed3, 1, 0) == pytest.approx(0.8 + 0.75)
 
 
 # ---------------------------------------------------------------------------

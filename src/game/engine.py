@@ -590,8 +590,6 @@ class Engine:
             self._log_seq = getattr(self, "_log_seq", 0) + 1
             entry["n"] = self._log_seq
         self.log.append(entry)
-        if len(self.log) > 200:
-            self.log.pop(0)
 
     # -------------------------------------------------------------------
     # 보드 조회

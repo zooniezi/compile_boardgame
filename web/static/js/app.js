@@ -12,6 +12,12 @@ let gameId = null;
 let lastState = null;
 let lastDraftState = null;   // renderDraft()가 매번 받는 state -- 테마 전환 시 재렌더링용
 
+// 새로고침해도 진행 중이던 게임을 이어서 보여주기 위한 저장 키. 서버는
+// 게임을 game_id로 메모리에 계속 들고 있으니(GAMES 딕셔너리, 서버가 안
+// 죽는 한 영구), 클라이언트가 그 id만 기억해두면 GET /api/state/<id>로
+// 지금 상태를 그대로 다시 받아올 수 있다 -- 새 엔드포인트도 필요 없었다.
+const GAME_ID_KEY = "compileGameId";
+
 // ----------------------------------------------------------------------------
 // 테마(다크/파스텔) -- 프로토콜 색은 서버가 테마별로 두 세트(colorsDark/
 // colorsLight)를 미리 계산해 내려주고(같은 색상, 밝은 배경에 맞게 채도/명도만
@@ -193,8 +199,17 @@ $("#start-btn").addEventListener("click", () => {
     startGame(chosenMode, null);
   }
 });
-$("#win-newgame").addEventListener("click", () => location.reload());
-$("#new-game-btn").addEventListener("click", () => location.reload());
+// "새 게임" 버튼은 명시적으로 게임을 버리고 새로 시작하려는 의도이므로,
+// 새로고침 시 이어하기 대상이 되지 않도록 저장해둔 gameId부터 지운다
+// (안 지우면 새로고침과 똑같이 취급돼 방금 버리려던 그 게임을 도로 살려낸다).
+$("#win-newgame").addEventListener("click", () => {
+  localStorage.removeItem(GAME_ID_KEY);
+  location.reload();
+});
+$("#new-game-btn").addEventListener("click", () => {
+  localStorage.removeItem(GAME_ID_KEY);
+  location.reload();
+});
 
 // 모바일: 로그/카드정보 영역 접기-펴기. prompt-bar는 이 토글과 무관하게
 // 항상 보인다(게임 진행에 필수라서 절대 숨기면 안 됨).
@@ -323,6 +338,7 @@ async function startGame(mode, draftedProtocols) {
   });
   const data = await res.json();
   gameId = data.gameId;
+  localStorage.setItem(GAME_ID_KEY, gameId);
   $("#setup-screen").classList.add("hidden");
   $("#play-setup-screen").classList.add("hidden");
   $("#draft-screen").classList.add("hidden");
@@ -1827,6 +1843,8 @@ function handleHandCardClick(card, req) {
 function showWin(winner) {
   $("#win-title").textContent = `${pName(winner).toUpperCase()} COMPILED.`;
   $("#win-overlay").classList.remove("hidden");
+  // 끝난 게임을 다음 새로고침에서 또 이어서 보여줄 이유가 없다.
+  localStorage.removeItem(GAME_ID_KEY);
 }
 
 // ----------------------------------------------------------------------------
@@ -2069,3 +2087,34 @@ function renderCodexCard(protoId, value, accent) {
   `;
   return el;
 }
+
+// ----------------------------------------------------------------------------
+// 새로고침 복구
+// ----------------------------------------------------------------------------
+// 서버는 게임을 game_id로 메모리에 계속 들고 있으니(web/app.py의 GAMES
+// 딕셔너리, 서버 프로세스가 살아있는 한 영구), 새로고침으로 날아가는 건
+// 실제 게임 상태가 아니라 "어느 게임을 보고 있었는지"를 기억하는
+// 클라이언트 쪽 gameId 변수뿐이었다 -- localStorage에 저장해뒀다가 페이지
+// 로드 시 GET /api/state/<id>(부작용 없음)로 다시 확인하면 된다.
+// 서버가 재시작됐거나(GAMES가 메모리뿐이라 프로세스가 죽으면 다 날아감)
+// 게임을 못 찾으면 조용히 포기하고 평소처럼 설정 화면을 보여준다.
+async function tryResumeGame() {
+  const saved = localStorage.getItem(GAME_ID_KEY);
+  if (!saved) return;
+  try {
+    const seq = ++requestSeq;
+    const res = await fetch(`/api/state/${saved}`);
+    if (!res.ok) throw new Error("gone");
+    const state = await res.json();
+    if (state.error) throw new Error(state.error);
+    gameId = saved;
+    $("#setup-screen").classList.add("hidden");
+    $("#play-setup-screen").classList.add("hidden");
+    $("#draft-screen").classList.add("hidden");
+    $("#game-screen").classList.remove("hidden");
+    handleState(state, seq);
+  } catch (e) {
+    localStorage.removeItem(GAME_ID_KEY);
+  }
+}
+tryResumeGame();

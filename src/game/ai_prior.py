@@ -702,11 +702,14 @@ def _clarity_1_cover(g, pi, card, line, hand_after):
 
 def _fear_0(g, pi, card, line, hand_after):
     """Fear_0: 뒤집기 또는 이동 중 선택(둘 다 optional) + 자기 자신도
-    대상이 될 수 있음. 정밀한 타겟형 shift 채점 인프라가 없어(이
-    프로젝트는 del/ret/flip만 일반화됨) shift 쪽은 _best_shift_where
-    (판 전체 스캔)로 근사한다."""
+    대상이 될 수 있음. 실제 효과(carddefs.py `_fear_0_play` -> `_move_one`)
+    는 항상 `_uncovered_only()`로 감싸여 있어 덮인 카드는 애초에 선택
+    불가능하므로, 채점도 `_covered_after_play`로 "이 카드를 내고 나면
+    덮여 있을(=대상이 될 수 없을)" 후보를 걸러낸다(260805_aboutshiftprior.md
+    참고 -- Lua `targetsAfterPlay`의 `l ~= line` 배제와 동치)."""
     flip = _flip_prior(g, pi, {"n": 1, "may": True})
-    shift = _best_shift_where(g, pi, lambda c: True, optional=True)
+    shift = _best_shift_where(
+        g, pi, lambda c: not _covered_after_play(g, c, pi, line), optional=True)
     flip = max(flip, _played_facedown_value(g, pi, line) - card.value - 0.5)
     shift = max(shift, 0.8)
     return max(0.0, flip, shift)
@@ -1043,9 +1046,13 @@ def _rigid_2_ongoing(g, pi, card, line, hand_after):
 
 
 def _speed_3_prior(g, pi, card, line, hand_after):
-    """Speed_3: 내 카드 1장 강제 이동(대상 제한 없음) -- targetsAfterPlay
-    기반 shiftPrior 인프라가 없어 _best_shift_where로 근사."""
-    return _best_shift_where(g, pi, lambda c: c.owner == pi, optional=False)
+    """Speed_3: 내 카드 1장 강제 이동 (carddefs.py `_speed_3_play` ->
+    `_move_one`이 항상 `_uncovered_only()`로 감싸므로, 덮인 카드는 실제로
+    선택 불가능 -- `_covered_after_play`로 "내고 나면 덮일" 후보를
+    걸러낸다(260805_aboutshiftprior.md 참고)."""
+    return _best_shift_where(
+        g, pi, lambda c: c.owner == pi and not _covered_after_play(g, c, pi, line),
+        optional=False)
 
 
 # =============================================================================

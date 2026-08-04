@@ -13,8 +13,8 @@ from src.game.engine import Engine
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_ismcts import ISMCTSAI
 from src.game.ai_ismcts_mlp import (
-    ISMCTSMLPAI, DEFAULT_MLP_WEIGHTS_PATH, DEFAULT_MLP_EVAL_SCALE, DEFAULT_LEGIBLE_EPS,
-    DEFAULT_REARRANGE_ITERATIONS,
+    ISMCTSMLPAI, DEFAULT_MLP_WEIGHTS_PATH, DEFAULT_MLP_EVAL_SCALE, DEFAULT_ITERATIONS,
+    DEFAULT_LEGIBLE_EPS, DEFAULT_REARRANGE_ITERATIONS,
 )
 from src.game.ai_sim import evaluate, evaluate_learned_mlp, load_mlp_weights
 
@@ -93,8 +93,16 @@ def test_default_construction_wires_rearrange_search():
     """Control 재배치 서브탐색을 이 프리셋만 기본으로 켠다 --
     ISMCTSAI 자체(중급/손튜닝)는 여전히 None(휴리스틱 즉답)."""
     ai = ISMCTSMLPAI(iterations=1)
-    assert ai.rearrange_iterations == DEFAULT_REARRANGE_ITERATIONS == 80
+    assert ai.rearrange_iterations == DEFAULT_REARRANGE_ITERATIONS == 120
     assert ISMCTSAI(iterations=1).rearrange_iterations is None
+
+
+def test_default_construction_wires_iterations_to_lua_expert_value():
+    """iterations 인자를 아예 안 주면 lua/ai_expert.lua의 mcts.iters=300과
+    맞춘 DEFAULT_ITERATIONS(=300)이 기본값으로 들어가야 한다 -- 예전엔
+    ISMCTSAI 기본값 200을 그대로 물려받고 있었다."""
+    ai = ISMCTSMLPAI(eval_scale=DEFAULT_MLP_EVAL_SCALE)
+    assert ai.iterations == DEFAULT_ITERATIONS == 300
 
 
 def test_rearrange_iterations_remains_overridable():
