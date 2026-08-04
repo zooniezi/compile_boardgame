@@ -75,6 +75,65 @@ def test_can_move_does_not_affect_ordinary_cards(engine):
     assert water0 in e.players[1]["stacks"][2]
 
 
+def test_rigid_7_facedown_or_covered_can_be_moved():
+    """cantMove/cantFlip 보호는 앞면+uncovered일 때만 활성 -- 뒷면이거나
+    덮여 있으면 보호가 없어야 한다(Darkness_4가 뒷면 Rigid_7을 골라도
+    이동이 조용히 막히던 버그의 회귀 테스트)."""
+    from src.game.engine import Engine
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    rigid7 = neutral_card(e, "Rigid", 7, 1)
+    rigid7.definition = get("Rigid", 7)
+    rigid7.face_up = False
+    e.players[1]["stacks"][1].append(rigid7)
+    assert e.can_move(rigid7) is True
+    assert e.move_card(rigid7, 1, 2) is True
+    assert rigid7 in e.players[1]["stacks"][2]
+
+    e2 = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    covered_rigid7 = neutral_card(e2, "Rigid", 7, 1)
+    covered_rigid7.definition = get("Rigid", 7)
+    covered_rigid7.face_up = True
+    on_top = neutral_card(e2, "Water", 0, 1)
+    on_top.face_up = True
+    e2.players[1]["stacks"][1].extend([covered_rigid7, on_top])
+    assert e2.can_move(covered_rigid7) is True
+
+
+def test_rigid_7_protection_suppressed_by_inert_1_in_same_line():
+    """Inert_1(suppressOtherBottom)이 같은 라인에 있으면 Rigid_7의
+    cantMove/cantFlip 보호도 무시돼야 한다(Lua bandSuppressedFor와 동일)."""
+    from src.game.engine import Engine
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    rigid7 = neutral_card(e, "Rigid", 7, 1)
+    rigid7.definition = get("Rigid", 7)
+    rigid7.face_up = True
+    e.players[1]["stacks"][1].append(rigid7)
+    assert e.can_move(rigid7) is False  # Inert_1 없으면 그대로 보호
+
+    inert1 = neutral_card(e, "Inert", 1, 2)
+    inert1.definition = get("Inert", 1)
+    inert1.face_up = True
+    e.players[2]["stacks"][1].append(inert1)
+    assert e.can_move(rigid7) is True
+    assert e.can_flip(rigid7) is True
+
+
+def test_darkness_4_can_move_a_facedown_rigid_7(dealt_engine):
+    """실사용 버그 리포트: 어둠_4로 뒷면 Rigid_7을 골라 이동 명령까지 냈는데도
+    반영이 안 되던 문제 -- can_move()가 뒷면 카드까지 무조건 막던 게 원인."""
+    e = dealt_engine
+    darkness4 = e.new_card("Darkness", 4, 1)
+    darkness4.definition = get("Darkness", 4)
+    target = neutral_card(e, "Rigid", 7, 1)
+    target.definition = get("Rigid", 7)
+    target.face_up = False
+    e.players[1]["stacks"][1].append(target)
+
+    make_ai(e, 1, [target.uid, 2])
+    darkness4.definition["play"](e, darkness4)
+    assert target in e.players[1]["stacks"][2]
+
+
 def test_nova_0_finish_plays_deck_top_under_opponent_nova(dealt_engine):
     """Nova_0 종료: 내 덱 맨 위 카드를 상대 스택의 드러난 Nova 카드 밑에
     뒷면으로 낸다 -- side(상대)와 pi(내 덱 소유자)가 달라야 한다.

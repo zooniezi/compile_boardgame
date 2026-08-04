@@ -1494,14 +1494,20 @@ class Engine:
         return True
 
     def can_flip(self, card):
-        """Ice_4 "뒤집을 수 없음": 앞면+uncovered일 때만 보호가 활성."""
-        if card.face_up and card.definition.get("cantFlip") and self.is_uncovered(card):
-            return False
-        return True
+        """Ice_4 "뒤집을 수 없음": 앞면+uncovered이고, 같은 라인에 이 보호를
+        무시시키는 카드(Inert_1류 suppressOtherBottom)가 없을 때만 활성."""
+        if not (card.face_up and card.definition.get("cantFlip") and self.is_uncovered(card)):
+            return True
+        _, line, _ = self.locate(card)
+        return line is not None and self._other_bottom_suppressed(line, card)
 
     def can_move(self, card):
-        """Rigid_7 "이동할 수 없음"."""
-        return not card.definition.get("cantMove")
+        """Rigid_7 "이동할 수 없음": 앞면+uncovered이고, 같은 라인에 이 보호를
+        무시시키는 카드(Inert_1류 suppressOtherBottom)가 없을 때만 활성."""
+        if not (card.face_up and card.definition.get("cantMove") and self.is_uncovered(card)):
+            return True
+        _, line, _ = self.locate(card)
+        return line is not None and self._other_bottom_suppressed(line, card)
 
     def flip_card(self, card, opts=None):
         """필드의 카드를 뒤집는다. 앞면으로 뒤집히면 Middle 명령이 다시 발동."""

@@ -58,6 +58,23 @@ def _driven_engine(seed, ai_modules, steps=20000):
     return e
 
 
+def test_c_ucb_and_c_puct_have_independent_defaults():
+    """트리 내부 노드용 c_ucb와 루트 전용 c_puct는 하나로 합쳐진 상수가
+    아니라 각자 다른 기본값을 갖는 별개 파라미터여야 한다."""
+    ai = ISMCTSAI()
+    assert ai.c_ucb == 0.7
+    assert ai.c_puct == 1.5
+
+
+def test_mlp_and_learned_presets_inherit_c_ucb_c_puct_defaults():
+    from src.game.ai_ismcts_mlp import ISMCTSMLPAI
+    from src.game.ai_ismcts_learned import ISMCTSLearnedAI
+    assert ISMCTSMLPAI().c_ucb == 0.7
+    assert ISMCTSMLPAI().c_puct == 1.5
+    assert ISMCTSLearnedAI().c_ucb == 0.7
+    assert ISMCTSLearnedAI().c_puct == 1.5
+
+
 # ---------------------------------------------------------------------------
 # 1. decide()는 항상 합법 액션을 반환한다
 # ---------------------------------------------------------------------------
@@ -548,7 +565,7 @@ def test_select_puct_prefers_highest_prior_action_when_all_unvisited(monkeypatch
 
     monkeypatch.setattr(ai_ismcts_module, "action_scores",
                          lambda sim, pi, acts, w: [0.0, 5.0, -5.0])
-    picked = _select_puct(node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41,
+    picked = _select_puct(node, _StubSim(), keys, actions, pi0=1, c_puct=1.41,
                            policy_w=object())
     assert picked == keys[1]
 
@@ -574,7 +591,7 @@ def test_select_puct_uses_fpu_half_not_zero_for_unvisited():
     orig = ai_ismcts_module.action_scores
     ai_ismcts_module.action_scores = _flat_scores
     try:
-        picked = _select_puct(node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41,
+        picked = _select_puct(node, _StubSim(), keys, actions, pi0=1, c_puct=1.41,
                                policy_w=object())
     finally:
         ai_ismcts_module.action_scores = orig
@@ -725,10 +742,10 @@ def test_root_dirichlet_noise_can_override_dominant_policy_preference():
     ai_ismcts_module._dirichlet_noise = lambda n, alpha, rng: [0.01, 0.99]     # 노이즈는 B를 압도적으로 선호
     try:
         no_noise = ai_ismcts_module._select_puct(
-            node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41, policy_w=object(),
+            node, _StubSim(), keys, actions, pi0=1, c_puct=1.41, policy_w=object(),
             root_dirichlet_alpha=None)
         full_noise = ai_ismcts_module._select_puct(
-            node, _StubSim(), keys, actions, pi0=1, c_ucb=1.41, policy_w=object(),
+            node, _StubSim(), keys, actions, pi0=1, c_puct=1.41, policy_w=object(),
             root_dirichlet_alpha=0.3, root_dirichlet_eps=1.0)
     finally:
         ai_ismcts_module.action_scores = orig_scores
@@ -750,9 +767,9 @@ def test_search_return_root_is_opt_in_and_backward_compatible():
             if "done" not in result and req.get("type") == "action" \
                     and len(g.legal_actions(req["chooser"])) > 1:
                 result["done"] = True
-                plain = _search(g, req["chooser"], req, 10, 1.41, HeuristicAI(), 4,
+                plain = _search(g, req["chooser"], req, 10, 1.41, 1.5, HeuristicAI(), 4,
                                  evaluate, None, 200.0)
-                with_root = _search(g, req["chooser"], req, 10, 1.41, HeuristicAI(), 4,
+                with_root = _search(g, req["chooser"], req, 10, 1.41, 1.5, HeuristicAI(), 4,
                                      evaluate, None, 200.0, return_root=True)
                 result["plain_is_tuple"] = isinstance(plain, tuple)
                 result["with_root_ok"] = isinstance(with_root, tuple) and len(with_root) == 2
@@ -955,7 +972,7 @@ def test_rearrange_search_calls_search_with_synthetic_root_req_and_no_policy_w()
     캡처해서 확인한다."""
     captured = {}
 
-    def fake_search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
+    def fake_search(g, pi0, root_req, iterations, c_ucb, c_puct, rollout_policy,
                      rollout_turn_cap, eval_fn, eval_w, eval_scale, *args, **kwargs):
         captured["pi0"] = pi0
         captured["root_req"] = root_req

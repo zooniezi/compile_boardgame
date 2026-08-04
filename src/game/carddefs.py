@@ -91,9 +91,16 @@ def _return_one(g, chooser, filter_fn=None, opts=None):
 
 
 def _move_one(g, chooser, filter_fn=None, opts=None):
-    """카드를 소유자의 다른 라인으로 옮긴다 (chooser가 카드+목적지 라인을 고름)."""
+    """카드를 소유자의 다른 라인으로 옮긴다 (chooser가 카드+목적지 라인을 고름).
+    이동 불가 카드(Rigid_7류 cantMove)는 애초에 후보에서 뺀다 -- 안 빼면
+    move_card() 안의 can_move() 강제 때문에 "골랐는데 아무 일도 안 일어나는"
+    UX 문제가 생긴다."""
     opts = opts or {}
-    cands = g.cards_in_play(_uncovered_only(g, filter_fn))
+    def check(x, pi, line):
+        if not g.can_move(x):
+            return False
+        return not filter_fn or filter_fn(x, pi, line)
+    cands = g.cards_in_play(_uncovered_only(g, check))
     card = g.choose_card_from(chooser, cands, opts)
     if not card:
         return None

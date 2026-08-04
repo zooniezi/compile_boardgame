@@ -263,15 +263,21 @@ def _dirichlet_noise(n, alpha, rng_draw):
     return [g / total for g in gammas]
 
 
-def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
+def _select_puct(node, sim, keys, cands, pi0, c_puct, policy_w,
                   uniform_mix=_POLICY_UNIFORM_MIX,
                   root_dirichlet_alpha=None, root_dirichlet_eps=0.25):
     """루트 노드 전용 선택 규칙 -- "학습된 루트 정책"이라는 이름 그대로,
     트리 안 깊은 노드는 여전히 `_select_ucb1`을 쓰고 이 함수는 루트에서만
     호출된다.
 
-    U = Q + c_ucb * P(a) * sqrt(ΣN) / (1+n) (AlphaZero식 PUCT). 학습된
-    정책의 softmax(+uniform_mix)를 사전확률 P(a)로 쓴다. 미방문 후보의
+    U = Q + c_puct * P(a) * sqrt(ΣN) / (1+n) (AlphaZero식 PUCT). 학습된
+    정책의 softmax(+uniform_mix)를 사전확률 P(a)로 쓴다. `c_puct`는
+    `_select_ucb1`의 `c_ucb`와 별개 상수다 -- 두 식의 보너스 항 모양이
+    달라서(UCB1은 `sqrt(log(N)/n)`, PUCT는 `P(a)*sqrt(N)/(1+n)`), 같은
+    "탐험 압력"을 내려면 서로 다른 계수가 필요하다. 특히 PUCT는 후보가
+    여럿이면 이미 1보다 훨씬 작은 사전확률 `P(a)`가 곱해져 보너스가 한 번
+    깎이고 들어가므로, 그 몫까지 보상하려면 계수 자체가 더 커야 한다.
+    미방문 후보의
     Q는 0이 아니라 0.5(First-Play-Urgency)로 잡는다 -- 핵심 버그 픽스:
     Q=0으로 두면 첫 평가된 자식이 형제 후보를 전부 굶겨서 탐색이
     붕괴한다(4.8%까지 승률 추락 실측 기록).
@@ -314,7 +320,7 @@ def _select_puct(node, sim, keys, cands, pi0, c_ucb, policy_w,
     for k in keys:
         n = node.N.get(k, 0)
         q = sign * node.W[k] / n if n > 0 else 0.5
-        u = c_ucb * prior[k] * sqrt_total / (1 + n)
+        u = c_puct * prior[k] * sqrt_total / (1 + n)
         score = q + u
         if best_score is None or score > best_score:
             best_score, best_key = score, k
@@ -432,7 +438,7 @@ def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
 
 
 def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
-                    nodes, rollout_policy, c_ucb, horizon_turn,
+                    nodes, rollout_policy, c_ucb, c_puct, horizon_turn,
                     eval_fn, eval_w, eval_scale, salt,
                     root_dirichlet_alpha=None, root_dirichlet_eps=0.25):
     """ISMCTS 반복 한 번: select(트리를 따라 UCB로 내려가다가 처음 보는
@@ -491,7 +497,7 @@ def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
                     node.answer_of.setdefault(k, v)
                     keys.append(k)
                 if policy_w is not None and key == root_key:
-                    chosen_key = _select_puct(node, sim, keys, cands, pi0, c_ucb,
+                    chosen_key = _select_puct(node, sim, keys, cands, pi0, c_puct,
                                                policy_w, policy_uniform_mix,
                                                root_dirichlet_alpha, root_dirichlet_eps)
                 else:
@@ -509,7 +515,7 @@ def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
         sim.dispose()  # 반드시 호출 -- 안 그러면 블로킹된 스레드가 쌓인다
 
 
-def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
+def _search(g, pi0, root_req, iterations, c_ucb, c_puct, rollout_policy,
             rollout_turn_cap, eval_fn, eval_w, eval_scale,
             policy_w=None, policy_uniform_mix=_POLICY_UNIFORM_MIX,
             root_dirichlet_alpha=None, root_dirichlet_eps=0.25,
@@ -517,6 +523,10 @@ def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
     """ISMCTS 본체. 성공하면 legal_actions(pi0)의 원소 하나를 반환하고,
     시뮬레이션이 불가능하면(시드 없음 등) None을 반환한다 -- 호출자는
     이 경우 휴리스틱 채점으로 폴백해야 한다.
+
+    c_ucb는 트리 내부 노드의 `_select_ucb1` 탐험 상수, c_puct는 루트
+    노드(policy_w가 주어졌을 때)의 `_select_puct` 탐험 상수다 -- 두 값이
+    독립적으로 조정 가능해야 하는 이유는 `_select_puct`의 문서를 참고.
 
     policy_w(ai_ismcts_policy.load_policy_weights()의 반환값)가 주어지면
     루트 노드(root_key)의 선택에만 `_select_puct`(학습된 정책 사전확률 +
@@ -548,7 +558,7 @@ def _search(g, pi0, root_req, iterations, c_ucb, rollout_policy,
 
     for i in range(iterations):
         path, value = _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
-                                      nodes, rollout_policy, c_ucb,
+                                      nodes, rollout_policy, c_ucb, c_puct,
                                       horizon_turn, eval_fn, eval_w, eval_scale, salt=i,
                                       root_dirichlet_alpha=root_dirichlet_alpha,
                                       root_dirichlet_eps=root_dirichlet_eps)
@@ -627,9 +637,18 @@ class ISMCTSAI(HeuristicAI):
     그대로 재사용하되 `policy_w=None`으로 호출한다 -- 이 서브탐색엔
     학습된 루트 정책을 안 쓰고 순수 UCB1만 쓴다. None이면(기본값)
     예전처럼 `HeuristicAI.planRearrange`(단일 휴리스틱 규칙)를 그대로
-    상속 -- 하위 호환. 값을 주면 그 값을 서브탐색 iterations로 쓴다."""
+    상속 -- 하위 호환. 값을 주면 그 값을 서브탐색 iterations로 쓴다.
 
-    def __init__(self, iterations=200, c_ucb=1.41, rollout_policy=None,
+    c_ucb/c_puct: 트리 선택 단계의 탐험 상수 두 개를 독립적으로 둔다.
+    `c_ucb`(기본 0.7)는 `_select_ucb1`이 쓰는 트리 내부 노드용 상수이고,
+    `c_puct`(기본 1.5)는 `_select_puct`가 루트 노드에서만 쓰는 상수다 --
+    둘을 하나로 합치지 않는 이유는 `_select_puct`의 문서에 적어 뒀다:
+    두 선택 공식의 보너스 항 모양이 다르고, PUCT 쪽은 사전확률 `P(a)`가
+    보너스를 한 번 더 깎기 때문에 같은 탐험 압력을 내려면 계수가 더
+    커야 한다."""
+
+    def __init__(self, iterations=200, c_ucb=0.7, c_puct=1.5,
+                 rollout_policy=None,
                  rollout_turn_cap=2, eval_fn=evaluate, eval_w=None,
                  eval_scale=200.0, policy_w=None,
                  policy_uniform_mix=_POLICY_UNIFORM_MIX,
@@ -637,6 +656,7 @@ class ISMCTSAI(HeuristicAI):
                  legible_eps=None, rearrange_iterations=None):
         self.iterations = iterations
         self.c_ucb = c_ucb
+        self.c_puct = c_puct
         # 롤아웃/선택 단계의 하위 결정을 대신 답하는 정책. 절대 self(또는
         # 다른 ISMCTSAI)를 넘기면 안 된다 -- 롤아웃 도중 만나는 'action'형
         # 서브 프롬프트(_extra_play 등)에서 재귀적으로 새 탐색이 또
@@ -659,7 +679,7 @@ class ISMCTSAI(HeuristicAI):
             acts = g.legal_actions(pi0)
             if len(acts) <= 1:
                 return acts[0] if acts else None
-            best = _search(g, pi0, req, self.iterations, self.c_ucb,
+            best = _search(g, pi0, req, self.iterations, self.c_ucb, self.c_puct,
                             self.rollout_policy, self.rollout_turn_cap,
                             self.eval_fn, self.eval_w, self.eval_scale,
                             self.policy_w, self.policy_uniform_mix,
@@ -684,7 +704,7 @@ class ISMCTSAI(HeuristicAI):
         if len(acts) <= 1:
             only = acts[0] if acts else None
             return only, ([(only, 1)] if only is not None else [])
-        result = _search(g, pi0, req, self.iterations, self.c_ucb,
+        result = _search(g, pi0, req, self.iterations, self.c_ucb, self.c_puct,
                           self.rollout_policy, self.rollout_turn_cap,
                           self.eval_fn, self.eval_w, self.eval_scale,
                           self.policy_w, self.policy_uniform_mix,
@@ -717,7 +737,8 @@ class ISMCTSAI(HeuristicAI):
             return super().planRearrange(g, pi, compiling_line)
         root_req = {"type": "planRearrange", "chooser": pi,
                      "compilingLine": compiling_line}
-        best = _search(g, pi, root_req, self.rearrange_iterations, self.c_ucb,
+        best = _search(g, pi, root_req, self.rearrange_iterations,
+                        self.c_ucb, self.c_puct,
                         self.rollout_policy, self.rollout_turn_cap,
                         self.eval_fn, self.eval_w, self.eval_scale)
         if best is None:
