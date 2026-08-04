@@ -22,11 +22,13 @@ import random
 import threading
 
 import numpy as np
+import pytest
 
 from src.game.engine import Engine
 from src.game.ai_ismcts import (
     ISMCTSAI, _Node, _select_ucb1, _select_puct, _answer_key, _node_key, _reward,
-    _candidates_for, _run_iteration,
+    _candidates_for, _run_iteration, _compile_lock_reward_correction,
+    _MY_LOCK_CORRECTION, _OPP_LOCK_CORRECTION,
 )
 from src.game.ai_features import feature_count as state_feature_count
 from src.game.ai_action_features import feature_count as action_feature_count
@@ -260,6 +262,101 @@ def test_reward_uses_evaluate_and_never_zero_when_undecided():
     z = _reward(e, 1, evaluate, None, 200.0)
     assert z == math.tanh(evaluate(e, 1) / 200.0)
     assert z != 0.0
+
+
+# ---------------------------------------------------------------------------
+# 6.1 학습된 평가함수용 컴파일 락 보정 (260805, 0단계에서 손튜닝 evaluate()
+#     에만 반영하고 미뤄뒀던 부분) -- _compile_lock_reward_correction 자체와,
+#     _reward()가 evaluate_learned류에만 이 보정을 적용하는지 확인.
+# ---------------------------------------------------------------------------
+
+def test_compile_lock_reward_correction_penalizes_my_false_lead():
+    """내가 임계값 이상 우세해도 상대 Lust_0류 봉쇄로 실제 컴파일이 안
+    되면, 그만큼 보상을 깎아야 한다."""
+    e = Engine(protocols1=["Fire", "Water", "Life"], protocols2=["Lust", "Metal", "Death"])
+    e.control = 2
+    lust0 = e.new_card("Lust", 0, 2)
+    lust0.face_up = True
+    e.players[2]["stacks"][1].append(lust0)
+    for _ in range(2):
+        c = e.new_card("Fire", 5, 1)
+        c.face_up = True
+        e.players[1]["stacks"][1].append(c)  # 라인1 값=10 (임계값 이상, 상대는 0)
+    assert _compile_lock_reward_correction(e, 1) == pytest.approx(_MY_LOCK_CORRECTION)
+
+
+def test_compile_lock_reward_correction_rewards_opponent_false_lead():
+    """반대 방향: 상대가 봉쇄돼 실제로는 위협이 아닌데 임계값 이상
+    우세하면, 그만큼 내 보상을 올려줘야 한다."""
+    e = Engine(protocols1=["Lust", "Water", "Fire"], protocols2=["Fire", "Metal", "Death"])
+    e.control = 1
+    lust0 = e.new_card("Lust", 0, 1)
+    lust0.face_up = True
+    e.players[1]["stacks"][1].append(lust0)
+    for _ in range(2):
+        c = e.new_card("Fire", 5, 2)
+        c.face_up = True
+        e.players[2]["stacks"][1].append(c)
+    assert _compile_lock_reward_correction(e, 1) == pytest.approx(_OPP_LOCK_CORRECTION)
+
+
+def test_compile_lock_reward_correction_zero_when_nobody_locked():
+    e = Engine(protocols1=PROTOS1, protocols2=PROTOS2)
+    assert _compile_lock_reward_correction(e, 1) == 0.0
+
+
+def test_reward_applies_lock_correction_only_to_registered_learned_eval_fns():
+    """evaluate()(손튜닝, 이미 자체 게이트 있음)는 이 보정 대상이 아니고,
+    _LOCK_CORRECTED_EVAL_FNS에 등록된 함수만 보정이 적용돼야 한다 --
+    이중 적용(evaluate() 자체 게이트 + 이 보정 둘 다)을 막는 핵심 불변식."""
+    e = Engine(protocols1=["Fire", "Water", "Life"], protocols2=["Lust", "Metal", "Death"])
+    e.control = 2
+    lust0 = e.new_card("Lust", 0, 2)
+    lust0.face_up = True
+    e.players[2]["stacks"][1].append(lust0)
+    for _ in range(2):
+        c = e.new_card("Fire", 5, 1)
+        c.face_up = True
+        e.players[1]["stacks"][1].append(c)
+
+    def fake_learned_eval(sim, pi, w=None):
+        return 0.0  # 원시 점수 0 -- tanh(0/scale)=0이라 보정만 순수하게 드러남
+
+    orig = ai_ismcts_module._LOCK_CORRECTED_EVAL_FNS
+    ai_ismcts_module._LOCK_CORRECTED_EVAL_FNS = (fake_learned_eval,)
+    try:
+        corrected = _reward(e, 1, fake_learned_eval, None, 200.0)
+    finally:
+        ai_ismcts_module._LOCK_CORRECTED_EVAL_FNS = orig
+    uncorrected = _reward(e, 1, evaluate, None, 200.0)  # evaluate는 등록 목록 밖
+
+    assert corrected == pytest.approx(_MY_LOCK_CORRECTION)
+    assert uncorrected != pytest.approx(_MY_LOCK_CORRECTION)
+
+
+def test_reward_clamps_to_valid_range_after_correction():
+    """tanh(score/scale)가 이미 ±1에 가까운 상태에서 보정까지 더해지면
+    범위를 벗어날 수 있으니 [-1, 1]로 다시 잘라야 한다."""
+    e = Engine(protocols1=["Lust", "Water", "Fire"], protocols2=["Fire", "Metal", "Death"])
+    e.control = 1
+    lust0 = e.new_card("Lust", 0, 1)
+    lust0.face_up = True
+    e.players[1]["stacks"][1].append(lust0)
+    for _ in range(2):
+        c = e.new_card("Fire", 5, 2)
+        c.face_up = True
+        e.players[2]["stacks"][1].append(c)
+
+    def fake_learned_eval(sim, pi, w=None):
+        return 1e9  # tanh(.../scale)가 이미 사실상 1.0
+
+    orig = ai_ismcts_module._LOCK_CORRECTED_EVAL_FNS
+    ai_ismcts_module._LOCK_CORRECTED_EVAL_FNS = (fake_learned_eval,)
+    try:
+        result = _reward(e, 1, fake_learned_eval, None, 200.0)
+    finally:
+        ai_ismcts_module._LOCK_CORRECTED_EVAL_FNS = orig
+    assert result == 1.0  # 1.0 + _OPP_LOCK_CORRECTION(0.30)이 아니라 1.0으로 clamp
 
 
 # ---------------------------------------------------------------------------

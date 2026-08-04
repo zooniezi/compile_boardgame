@@ -32,8 +32,10 @@ import math
 import random
 
 from src.game.ai_heuristic import HeuristicAI
-from src.game.ai_sim import determinize, evaluate, DECLINE
+from src.game.ai_sim import determinize, evaluate, evaluate_learned, evaluate_learned_mlp, DECLINE
 from src.game.ai_ismcts_policy import action_scores
+from src.game.ai_prior import compile_available_next_check
+from src.game.rules import COMPILE_THRESHOLD
 
 # 정책이 낮게 평가한 후보도 PUCT 탐색에서 완전히 죽지 않고(사전확률이
 # 0에 가까워도 최소 이 비율은 남아) 계속 탐색 가능하게 균등분포를 5%
@@ -363,6 +365,55 @@ def _apply_legibility_tiebreak(g, pi0, root, best_key, legible_eps):
     return pick_key
 
 
+# 학습된 평가함수(evaluate_learned/evaluate_learned_mlp)는 Lust_0류 동적
+# 컴파일 봉쇄(compile_available_next_check)를 모르는 채로 학습됐다 -- 손튜닝
+# evaluate()는 0단계에서 이미 이 봉쇄를 gate했지만(w["ready"] 대신
+# w["lead"]로 폴백하는 조건부 스위칭), 학습 모델은 원시 로짓 스케일이
+# evaluate()의 Sim.W 스케일(compiled=100 등)과 대응되지 않아 그 수정을
+# 그대로 옮길 수 없어 미뤄뒀었다(260803_ai_lua_vs_python_analysis.md 0단계
+# "의도적으로 보류한 부분" 참고).
+#
+# 이 보정은 Lua Sim.evaluateLearnedWithWeights의 compileRulesCorrection을
+# 이식한 것 -- 다만 Lua는 원시 로짓을 *100 해서 Sim.W와 같은 단위로 맞춘 뒤
+# 그 스케일(ready-lead=47, oppReady-oppBrew=37)로 보정을 더하는데, Python
+# 학습 모델의 원시 로짓은 그 100-스케일과 직접 대응되지 않는다. 그래서
+# 원시 점수가 아니라 tanh 압축 이후의 최종 보상([-1,1]) 공간에서 직접
+# 보정한다 -- Lua도 결국 이 압축(ai_mcts.lua의 squash(s)=0.5+0.5*tanh(s/120))
+# 을 거쳐 [0,1] MCTS 보상으로 쓰이므로, Lua의 보정이 그 압축의 원점 근방
+# 기울기(0.5/120)를 통과했을 때 만드는 효과(-47/240=-0.196, +37/240=+0.154,
+# [0,1] 스케일)를 Python의 [-1,1] 스케일(폭이 2배)로 환산한 값을 반올림해서
+# 쓴다. 정확한 재학습/재보정이 아니라 근사이므로, 실제 도움이 되는지는
+# 아레나로 검증한다(260805_lockcorrection.md 참고).
+_LOCK_CORRECTED_EVAL_FNS = (evaluate_learned, evaluate_learned_mlp)
+_MY_LOCK_CORRECTION = -0.35
+_OPP_LOCK_CORRECTION = 0.30
+
+
+def _compile_lock_reward_correction(g, pi0):
+    """이번 반복이 멈춘 국면(g) 기준으로, pi0 또는 상대가 Lust_0류 동적
+    봉쇄에 걸려 임계값 이상 우세해도 다음 자기 턴에 실제로 컴파일을 못 하는
+    라인이 있으면 그만큼 보상을 깎거나(내 false lead) 올린다(상대 false
+    lead). `ai_prior.compile_available_next_check`/`_line_threat`와 동일한
+    조건을 그대로 재사용."""
+    o = _other(pi0)
+    my_locked = (not g.cant_compile[pi0] and g._blocked_by_opponent_control(pi0)
+                 and not compile_available_next_check(g, pi0))
+    opp_locked = (not g.cant_compile[o] and g._blocked_by_opponent_control(o)
+                  and not compile_available_next_check(g, o))
+    if not my_locked and not opp_locked:
+        return 0.0
+    correction = 0.0
+    for line in (1, 2, 3):
+        mv, ov = g.line_value(pi0, line), g.line_value(o, line)
+        if (my_locked and not g.players[pi0]["compiled"][line]
+                and mv >= COMPILE_THRESHOLD and mv > ov):
+            correction += _MY_LOCK_CORRECTION
+        if (opp_locked and not g.players[o]["compiled"][line]
+                and ov >= COMPILE_THRESHOLD and ov > mv):
+            correction += _OPP_LOCK_CORRECTION
+    return correction
+
+
 def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
     """항상 pi0 시점 스칼라. 이 엔진에 무승부는 없다(resolve_stalemate가
     끝까지 동률이면 승자를 강제 배정) -- sim.winner가 None이면 그건
@@ -373,7 +424,11 @@ def _reward(sim, pi0, eval_fn, eval_w, eval_scale):
     if sim.winner is not None:
         return -1.0
     score = eval_fn(sim, pi0, eval_w) if eval_w is not None else eval_fn(sim, pi0)
-    return math.tanh(score / eval_scale)
+    reward = math.tanh(score / eval_scale)
+    if eval_fn in _LOCK_CORRECTED_EVAL_FNS:
+        reward += _compile_lock_reward_correction(sim, pi0)
+        reward = max(-1.0, min(1.0, reward))
+    return reward
 
 
 def _run_iteration(g, pi0, my_turn, root_key, policy_w, policy_uniform_mix,
