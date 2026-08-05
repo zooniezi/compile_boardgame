@@ -32,8 +32,8 @@ generate_policy_data.py`와 같은 스키마, 다만 `y`는 0/1 하드 라벨이
 사용법:
     python3 scripts/generate_rl_selfplay_data.py <판수> <출력파일_접두사> \
         --eval-weights <값망.npz> --policy-weights <정책망.npz> \
-        [--iterations 50] [--dirichlet-alpha 0.3] [--dirichlet-eps 0.25] \
-        [--temp-moves 10] [--seed-base 0] [--n-workers auto]
+        [--iterations 50] [--rearrange-iterations N] [--dirichlet-alpha 0.3] \
+        [--dirichlet-eps 0.25] [--temp-moves 10] [--seed-base 0] [--n-workers auto]
 """
 
 import random
@@ -166,12 +166,13 @@ def _play_game_worker(item):
 
 
 def generate(n_games, out_prefix, eval_weights_path, policy_weights_path,
-             iterations=50, dirichlet_alpha=0.3, dirichlet_eps=0.25,
+             iterations=50, rearrange_iterations=None, dirichlet_alpha=0.3, dirichlet_eps=0.25,
              temp_moves=10, seed_base=0, n_workers=1,
              c_ucb=1.41, rollout_turn_cap=2, eval_scale=3.1):
     eval_w = load_mlp_weights(eval_weights_path)
     policy_w = load_policy_weights(policy_weights_path)
-    ai_kwargs = dict(iterations=iterations, c_ucb=c_ucb, rollout_turn_cap=rollout_turn_cap,
+    ai_kwargs = dict(iterations=iterations, rearrange_iterations=rearrange_iterations,
+                      c_ucb=c_ucb, rollout_turn_cap=rollout_turn_cap,
                       eval_scale=eval_scale,
                       root_dirichlet_alpha=dirichlet_alpha, root_dirichlet_eps=dirichlet_eps)
 
@@ -241,6 +242,7 @@ if __name__ == "__main__":
     eval_weights_path = _arg("--eval-weights", "src/game/data/eval_weights_mlp.npz")
     policy_weights_path = _arg("--policy-weights", "src/game/data/policy_weights.npz")
     iterations = _arg("--iterations", 50, int)
+    rearrange_iterations = _arg("--rearrange-iterations", None, int)
     dirichlet_alpha = _arg("--dirichlet-alpha", 0.3, float)
     dirichlet_eps = _arg("--dirichlet-eps", 0.25, float)
     temp_moves = _arg("--temp-moves", 10, int)
@@ -249,6 +251,7 @@ if __name__ == "__main__":
     n_workers = n_workers_raw if n_workers_raw == "auto" else int(n_workers_raw)
 
     generate(n_games, out_prefix, eval_weights_path, policy_weights_path,
-             iterations=iterations, dirichlet_alpha=dirichlet_alpha,
+             iterations=iterations, rearrange_iterations=rearrange_iterations,
+             dirichlet_alpha=dirichlet_alpha,
              dirichlet_eps=dirichlet_eps, temp_moves=temp_moves,
              seed_base=seed_base, n_workers=n_workers)

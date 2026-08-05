@@ -20,6 +20,7 @@ eval_weights_mlp.npz`/`policy_weights.npz`, 오늘 모방학습 결과)를 기�
         [--eval-weights src/game/data/eval_weights_mlp.npz] \
         [--policy-weights src/game/data/policy_weights.npz] \
         [--n-generations 1] [--n-games 150] [--iterations 40] \
+        [--rearrange-iterations N] \
         [--gate-pairs 15] [--gate-iterations 200] [--n-workers auto] \
         [--continue-on-fail]
 """
@@ -56,15 +57,18 @@ def _make_ai_factory(eval_weights_path, policy_weights_path, iterations, rollout
 
 def run_one_generation(gen_idx, work_dir, eval_weights_path, policy_weights_path,
                         n_games, iterations, dirichlet_alpha, dirichlet_eps,
-                        temp_moves, n_workers, gate_pairs, gate_iterations, seed_base):
+                        temp_moves, n_workers, gate_pairs, gate_iterations, seed_base,
+                        rearrange_iterations=None):
     work_dir = Path(work_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     prefix = str(work_dir / f"gen{gen_idx}")
 
-    print(f"===== 세대 {gen_idx}: 자기대국 {n_games}판(iterations={iterations}) =====")
+    print(f"===== 세대 {gen_idx}: 자기대국 {n_games}판(iterations={iterations}, "
+          f"rearrange_iterations={rearrange_iterations}) =====")
     t0 = time.time()
     generate_selfplay(n_games, prefix, eval_weights_path, policy_weights_path,
-                       iterations=iterations, dirichlet_alpha=dirichlet_alpha,
+                       iterations=iterations, rearrange_iterations=rearrange_iterations,
+                       dirichlet_alpha=dirichlet_alpha,
                        dirichlet_eps=dirichlet_eps, temp_moves=temp_moves,
                        seed_base=seed_base, n_workers=n_workers)
     print(f"자기대국 소요: {time.time() - t0:.1f}초")
@@ -107,6 +111,7 @@ def main(argv):
     n_generations = _arg("--n-generations", 1, int)
     n_games = _arg("--n-games", 150, int)
     iterations = _arg("--iterations", 40, int)
+    rearrange_iterations = _arg("--rearrange-iterations", None, int)
     dirichlet_alpha = _arg("--dirichlet-alpha", 0.3, float)
     dirichlet_eps = _arg("--dirichlet-eps", 0.25, float)
     temp_moves = _arg("--temp-moves", 10, int)
@@ -121,6 +126,7 @@ def main(argv):
         outcome = run_one_generation(
             gen_idx, work_dir, eval_weights_path, policy_weights_path,
             n_games=n_games, iterations=iterations,
+            rearrange_iterations=rearrange_iterations,
             dirichlet_alpha=dirichlet_alpha, dirichlet_eps=dirichlet_eps,
             temp_moves=temp_moves, n_workers=n_workers,
             gate_pairs=gate_pairs, gate_iterations=gate_iterations,

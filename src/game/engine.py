@@ -605,11 +605,37 @@ class Engine:
             return False
         return idx == len(self.players[pi]["stacks"][line]) - 1
 
+    def _band_suppressed_for(self, card, band):
+        """Inert_0/1류: 같은 라인의 다른 카드가 suppressOtherTop/Bottom을
+        가지면 이 카드의 `band`(top|bot) 명령/패시브가 무효화된다.
+        suppressOtherBottom 소스는 uncovered여야 하지만(bot 명령 자체가
+        uncovered에서만 살아있는 것과 동일 규칙), suppressOtherTop 소스는
+        top 밴드 패시브답게 덮여 있어도 활성 -- 이 라인의 다른 top-밴드
+        패시브(lineValueSelf 등)가 덮여도 살아있는 것과 같은 이유."""
+        if band not in ("top", "bot"):
+            return False
+        _, line, _ = self.locate(card)
+        if line is None:
+            return False
+        field = "suppressOtherTop" if band == "top" else "suppressOtherBottom"
+        for side in (1, 2):
+            st = self.players[side]["stacks"][line]
+            for idx, x in enumerate(st):
+                if x is card or not x.face_up:
+                    continue
+                if band == "bot" and idx != len(st) - 1:
+                    continue
+                if x.definition.get("passive", {}).get(field):
+                    return True
+        return False
+
     def passives_suppressed(self, line):
-        """이 라인이 Middle 명령을 전부 무시하는가? (Apathy_2)"""
+        """이 라인이 Middle 명령을 전부 무시하는가? (Apathy_2) -- 이 무시
+        패시브 자체도 top 밴드라 Inert_0류에 의해 억제될 수 있다."""
         for pi in (1, 2):
             for c in self.players[pi]["stacks"][line]:
-                if c.face_up and c.definition.get("passive", {}).get("ignoreMiddle"):
+                if (c.face_up and c.definition.get("passive", {}).get("ignoreMiddle")
+                        and not self._band_suppressed_for(c, "top")):
                     return True
         return False
 
@@ -620,7 +646,7 @@ class Engine:
         for c in stack:
             if c.face_up:
                 val = c.definition.get("passive", {}).get("facedownValueThisStack")
-                if val:
+                if val and not self._band_suppressed_for(c, "top"):
                     return val
         return 2
 
@@ -641,6 +667,7 @@ class Engine:
         # 않는다") -- 라인 어느 쪽에 있어도 활성화된다.
         ignore_highest = any(
             c.face_up and c.definition.get("passive", {}).get("ignoreHighestInLine")
+            and not self._band_suppressed_for(c, "top")
             for side in (1, 2) for c in self.players[side]["stacks"][line])
         highest = None
         if ignore_highest:
@@ -659,13 +686,13 @@ class Engine:
             total += v
         # 자기 자신 값 보정 패시브 (Apathy_0)
         for c in st:
-            if c.face_up:
+            if c.face_up and not self._band_suppressed_for(c, "top"):
                 fn = c.definition.get("passive", {}).get("lineValueSelf")
                 if fn:
                     total += fn(self, c, line)
         # 이 라인의 상대편 값 감소 패시브 (Metal_0)
         for c in self.players[_other(pi)]["stacks"][line]:
-            if c.face_up:
+            if c.face_up and not self._band_suppressed_for(c, "top"):
                 delta = c.definition.get("passive", {}).get("lineValueOppDelta")
                 if delta:
                     total += delta
@@ -673,7 +700,7 @@ class Engine:
         # 있어도 양쪽 총 값에 똑같이 적용).
         for side in (1, 2):
             for c in self.players[side]["stacks"][line]:
-                if c.face_up:
+                if c.face_up and not self._band_suppressed_for(c, "top"):
                     bonus = c.definition.get("passive", {}).get("lineValueBoth")
                     if bonus:
                         total += bonus
@@ -1075,10 +1102,12 @@ class Engine:
         for s in snap["entries"]:
             c = s["card"]
             if s["band"] == "bot":
-                if c.face_up and self.is_uncovered(c):
+                if (c.face_up and self.is_uncovered(c)
+                        and not self._band_suppressed_for(c, "bot")):
                     fn = c.definition["reactive"][event]
                     self.run_card(c, lambda: fn(self, c, actor, ctx, s), "bot", "reactive")
-            elif c.face_up and self.locate(c)[0] is not None:
+            elif (c.face_up and self.locate(c)[0] is not None
+                    and not self._band_suppressed_for(c, "top")):
                 fn = c.definition["reactiveTop"][event]
                 self.run_card(c, lambda: fn(self, c, actor, ctx, s), "top", "reactive")
         self._react_depth -= 1
@@ -1498,16 +1527,14 @@ class Engine:
         무시시키는 카드(Inert_1류 suppressOtherBottom)가 없을 때만 활성."""
         if not (card.face_up and card.definition.get("cantFlip") and self.is_uncovered(card)):
             return True
-        _, line, _ = self.locate(card)
-        return line is not None and self._other_bottom_suppressed(line, card)
+        return self._band_suppressed_for(card, "bot")
 
     def can_move(self, card):
         """Rigid_7 "이동할 수 없음": 앞면+uncovered이고, 같은 라인에 이 보호를
         무시시키는 카드(Inert_1류 suppressOtherBottom)가 없을 때만 활성."""
         if not (card.face_up and card.definition.get("cantMove") and self.is_uncovered(card)):
             return True
-        _, line, _ = self.locate(card)
-        return line is not None and self._other_bottom_suppressed(line, card)
+        return self._band_suppressed_for(card, "bot")
 
     def flip_card(self, card, opts=None):
         """필드의 카드를 뒤집는다. 앞면으로 뒤집히면 Middle 명령이 다시 발동."""
@@ -1845,25 +1872,14 @@ class Engine:
                 return i
         return 0
 
-    def _other_bottom_suppressed(self, line, excluding_card):
-        """Inert_1 "이 라인의 다른 모든 카드는 하단 명령어가 없는 것으로
-        취급": line의 양쪽 스택 중 excluding_card가 아닌 uncovered 앞면
-        카드에 suppressOtherBottom이 있으면 True."""
-        for side in (1, 2):
-            for x in self.players[side]["stacks"][line]:
-                if (x is not excluding_card and x.face_up and self.is_uncovered(x)
-                        and x.definition.get("passive", {}).get("suppressOtherBottom")):
-                    return True
-        return False
-
     def phase_trigger_resolvable(self, e):
         """이 페이즈 트리거가 지금 실제로 뭔가를 할 수 있는가? (무의미한 선택지 배제용)"""
         c = e["card"]
-        pi, line, _ = self.locate(c)
+        pi, _, _ = self.locate(c)
         visible = c.face_up and pi is not None and (e["band"] == "top" or self.is_uncovered(c))
         if not visible or not c.definition.get(e["field"]):
             return False
-        if line is not None and self._other_bottom_suppressed(line, c):
+        if self._band_suppressed_for(c, e["band"]):
             return False
         can_map = c.definition.get("can")
         can = can_map.get(e["field"]) if can_map else None

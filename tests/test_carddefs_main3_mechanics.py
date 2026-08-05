@@ -227,14 +227,15 @@ def test_lust_2_allows_own_mismatched_protocol_card_in_this_stack(engine):
     assert ok2 is False
 
 
-def test_inert_1_suppresses_other_start_end_triggers_in_line(engine):
-    """Inert_1: 이 라인의 다른 카드는 하단(Start/End) 명령이 없는 것으로
-    취급 -- phase_trigger_resolvable이 False를 반환해야 한다."""
+def test_inert_0_suppresses_other_top_band_triggers_in_line(engine):
+    """Inert_0: 이 라인의 다른 카드는 상단(top) 명령이 없는 것으로 취급 --
+    phase_trigger_resolvable이 top 밴드 트리거를 억제해야 한다(bot 밴드는
+    Inert_1의 몫, 아래 별도 테스트)."""
     e = engine
-    inert1 = neutral_card(e, "Inert", 1, 1)
-    inert1.definition = get("Inert", 1)
-    inert1.face_up = True
-    e.players[1]["stacks"][1].append(inert1)
+    inert0 = neutral_card(e, "Inert", 0, 1)
+    inert0.definition = get("Inert", 0)
+    inert0.face_up = True
+    e.players[1]["stacks"][1].append(inert0)
 
     courage0 = neutral_card(e, "Courage", 0, 2)
     courage0.definition = get("Courage", 0)
@@ -243,12 +244,59 @@ def test_inert_1_suppresses_other_start_end_triggers_in_line(engine):
     e.players[2]["hand"] = []  # Courage_0 startTop 조건(손 없음) 충족
 
     entry = {"card": courage0, "band": "top", "field": "startTop"}
+    assert e.phase_trigger_resolvable(entry) is False  # Inert_0이 억제
+
+    # Inert_0을 치우면 다시 정상적으로 resolve 가능해야 함(억제가 이 라인의
+    # suppressOtherTop 카드 유무에만 달려 있는지 확인).
+    e.players[1]["stacks"][1].remove(inert0)
+    assert e.phase_trigger_resolvable(entry) is True
+
+
+def test_inert_1_suppresses_other_bottom_band_triggers_in_line(engine):
+    """Inert_1: 이 라인의 다른 카드는 하단(bot) 명령이 없는 것으로 취급 --
+    top 밴드(Inert_0 몫)와 밴드가 섞이지 않는지 확인."""
+    e = engine
+    inert1 = neutral_card(e, "Inert", 1, 1)
+    inert1.definition = get("Inert", 1)
+    inert1.face_up = True
+    e.players[1]["stacks"][1].append(inert1)
+
+    target = neutral_card(e, "Courage", 6, 2)
+    target.definition = {"finish": lambda g, c: None}  # 조건 없는 가짜 bot 트리거
+    target.face_up = True
+    e.players[2]["stacks"][1].append(target)  # 같은 라인, uncovered
+
+    entry = {"card": target, "band": "bot", "field": "finish"}
     assert e.phase_trigger_resolvable(entry) is False  # Inert_1이 억제
 
-    # Inert_1을 치우면 다시 정상적으로 resolve 가능해야 함(억제가 이 라인의
-    # suppressOtherBottom 카드 유무에만 달려 있는지 확인).
     e.players[1]["stacks"][1].remove(inert1)
     assert e.phase_trigger_resolvable(entry) is True
+
+
+def test_inert_0_suppression_stays_active_while_covered():
+    """suppressOtherTop은 top 밴드 패시브라, 그걸 가진 카드(Inert_0)가
+    덮여도 억제 효과는 계속 살아있어야 한다(bot 밴드인 suppressOtherBottom
+    은 반대로 소스가 uncovered여야 함, test_rigid_7_protection_suppressed_
+    by_inert_1_in_same_line과 대비)."""
+    from src.game.engine import Engine
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    darkness2 = neutral_card(e, "Darkness", 2, 1)
+    darkness2.definition = get("Darkness", 2)
+    darkness2.face_up = True
+    e.players[1]["stacks"][1].append(darkness2)
+    # Darkness_2(facedownValueThisStack=4)만 있으면 이 스택의 뒷면 값은 4.
+    assert e.facedown_value_in_stack(e.players[1]["stacks"][1]) == 4
+
+    inert0 = neutral_card(e, "Inert", 0, 2)
+    inert0.definition = get("Inert", 0)
+    inert0.face_up = True
+    e.players[2]["stacks"][1].append(inert0)
+    on_top = neutral_card(e, "Water", 1, 2)
+    on_top.face_up = True
+    e.players[2]["stacks"][1].append(on_top)  # Inert_0을 덮음
+    assert e.is_uncovered(inert0) is False
+    # 덮여 있어도 top 밴드 패시브라 여전히 억제 -- 기본값 2로 돌아감.
+    assert e.facedown_value_in_stack(e.players[1]["stacks"][1]) == 2
 
 
 def test_rigid_3_plays_hand_card_that_covers_self(dealt_engine):
