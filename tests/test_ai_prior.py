@@ -1049,6 +1049,34 @@ def test_score_action_threshold_bonus_suppressed_when_playing_side_is_locked():
     assert s_free - s_locked == pytest.approx(60)
 
 
+def test_score_action_facedown_contrib_uses_real_facedown_value_not_fixed_two():
+    """회귀 테스트: score_action은 실제 HeuristicAI 의사결정에 쓰이는
+    채점 함수라 ai_features.py/ai_action_features.py의 같은 버그보다
+    파급력이 크다 -- Darkness_2가 깔린 라인에 뒷면으로 낼 때 contrib이
+    고정값 2가 아니라 facedown_value_in_stack()의 실제 값(4)이어야 한다.
+
+    두 시나리오 모두 라인에 인쇄값 2인 카드를 앞면으로 하나 깔아둬서
+    my_line 시작값을 동일(2)하게 맞춘다 -- Darkness_2 유무 말고 다른
+    변수(my_line<=opp_line<new_mine 보너스 등 다른 score 분기)가 안
+    끼어들게 격리하기 위함. 그래야 두 상황의 score 차이가 순수하게
+    contrib 보정분(4-2=2)만 남는다."""
+    def build(with_darkness2):
+        e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Darkness", "Metal", "Death"])
+        filler = _card(e, "Darkness", 2, 1) if with_darkness2 else _card(e, "Metal", 2, 1)
+        e.players[1]["stacks"][1].append(filler)
+        card = _card(e, "Water", 3, 1)
+        e.players[1]["hand"].clear()
+        e.players[1]["hand"].append(card)
+        action = {"kind": "play", "uid": card.uid, "line": 1, "faceUp": False}
+        return e, action
+
+    e_plain, a_plain = build(False)
+    e_dark, a_dark = build(True)
+    s_plain = score_action(e_plain, 1, a_plain)
+    s_dark = score_action(e_dark, 1, a_dark)
+    assert s_dark - s_plain == pytest.approx(2.0)
+
+
 # ---------------------------------------------------------------------------
 # defusable_threat / plan_rearrange (1-d)
 # ---------------------------------------------------------------------------

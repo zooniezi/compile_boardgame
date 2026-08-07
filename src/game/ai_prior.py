@@ -2040,7 +2040,7 @@ def score_action(g, pi, action):
         return s
 
     o = _other(pi)
-    contrib = card.value if face_up else 2
+    contrib = card.value if face_up else g.facedown_value_in_stack(g.players[pi]["stacks"][line])
     my_line = g.line_value(pi, line)
     opp_line = g.line_value(o, line)
     new_mine = my_line + contrib

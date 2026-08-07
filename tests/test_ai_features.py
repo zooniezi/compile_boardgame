@@ -174,6 +174,43 @@ def test_opp_one_move_uses_real_facedown_value_not_fixed_two():
     assert opp_one_move(with_darkness2=True) == 1.0
 
 
+def test_card_value_features_use_true_max_seven_not_six():
+    """회귀 테스트: 게임 전체 카드값 최댓값은 6이 아니라 7(Rigid_7,
+    protocols.py VALUES). /6.0으로 정규화하면 Rigid_7이 1.0을 넘는
+    비정상값을 내거나(클리핑 없는 곳) 6짜리 카드와 구별이 안 됐다
+    (클리핑 있는 곳). /7.0이어야 정확히 1.0에 닿는다."""
+    from src.game.ai_features import _line_block
+
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Rigid", "Metal", "Death"])
+    r7 = e.new_card("Rigid", 7, 2)
+    r7.face_up = True
+    e.players[2]["stacks"][1].append(r7)
+    block = _line_block(e, 1, 2, 1, hand_max=0)
+    opp_top_idx = FEATURE_NAMES.index("line1_opp_top_val") - FEATURE_NAMES.index("line1_my_val")
+    assert block[opp_top_idx] == 1.0
+
+
+def test_best_swing_uses_real_facedown_value_not_fixed_two():
+    """회귀 테스트: _best_swing()도 opp_one_move와 같은 버그를 갖고 있었다
+    -- 상대 라인 맨 위가 뒷면이면 고정값 2 대신 facedown_value_in_stack()
+    (Darkness_2 있으면 4)을 써야 한다."""
+    from src.game.ai_features import _best_swing
+
+    def swing(with_darkness2):
+        e = Engine(protocols1=["Hate", "Water", "Fire"], protocols2=["Darkness", "Metal", "Death"])
+        e.players[1]["hand"] = [e.new_card("Hate", 0, 1)]  # TAGS["Hate_0"] = {"del": ...}
+        if with_darkness2:
+            d2 = e.new_card("Darkness", 2, 2)
+            d2.face_up = True
+            e.players[2]["stacks"][1].append(d2)
+        hidden = e.new_card("Metal", 6, 2)  # 뒷면이라 값은 안 보임
+        e.players[2]["stacks"][1].append(hidden)
+        return _best_swing(e, 1, 2)
+
+    assert swing(with_darkness2=False) == 2
+    assert swing(with_darkness2=True) == 4
+
+
 def test_lines_are_sorted_by_my_advantage_not_by_line_number():
     """1등 라인 블록이 실제로 가장 유리한 라인의 값을 담고 있어야 한다."""
     e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
@@ -255,7 +292,7 @@ def test_best_swing_picks_the_fattest_face_up_target():
     big.face_up = True
     e.players[2]["stacks"][2].append(big)
     x = extract(e, 1)
-    assert x[FEATURE_NAMES.index("best_swing")] == 6.0 / 6.0
+    assert x[FEATURE_NAMES.index("best_swing")] == 6.0 / 7.0
 
 
 def test_line_brew_and_one_move_signals():

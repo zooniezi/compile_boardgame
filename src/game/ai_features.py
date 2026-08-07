@@ -83,7 +83,7 @@ def _hand_potential(g, pi):
         total_value += c.value
     return [
         del_n / n, ret_n / n, flip_n / n, draw_n / n, ongoing_n / n,
-        (total_value / n) / 6.0,  # 카드 값은 보통 0~6
+        (total_value / n) / 7.0,  # 카드 값 최댓값은 7(Rigid_7, protocols.py VALUES)
         shift_n / n, opp_disc_n / n, disc_cost_n / n,
     ]
 
@@ -199,9 +199,9 @@ def _exposure(g, pi):
 
 def _best_swing(g, pi, o):
     """지금 당장 내 제거 카드로 칠 수 있는 상대의 가장 두꺼운 라인 맨 위
-    카드 값 (뒷면이면 정체 불명이므로 2로 보수적으로 가정). 손패에 제거
-    카드가 아예 없으면 0 -- 손패 잠재력과 보드 위 실제 표적을 연결하는
-    교차 특징."""
+    카드 값 (뒷면이면 실제 뒷면값을 facedown_value_in_stack()으로 구함 --
+    Darkness_2가 그 스택에 있으면 2가 아니라 4). 손패에 제거 카드가 아예
+    없으면 0 -- 손패 잠재력과 보드 위 실제 표적을 연결하는 교차 특징."""
     has_removal = any(
         TAGS.get(f"{c.proto}_{c.value}", {}).get("del") for c in g.players[pi]["hand"])
     if not has_removal:
@@ -210,7 +210,7 @@ def _best_swing(g, pi, o):
     for line in (1, 2, 3):
         top = g.top_card(o, line)
         if top:
-            v = top.value if top.face_up else 2
+            v = top.value if top.face_up else g.facedown_value_in_stack(g.players[o]["stacks"][line])
             if v > best:
                 best = v
     return best
@@ -257,9 +257,9 @@ def _line_block(g, pi, o, line, hand_max):
                 and ov + g.facedown_value_in_stack(g.players[o]["stacks"][line]) >= T
                 and ov + g.facedown_value_in_stack(g.players[o]["stacks"][line]) > mv) else 0.0,
         # 라인 맨 위 카드의 정체 (앞면이면 값, 상대는 뒷면 여부도)
-        (opp_top.value / 6.0) if (opp_top and opp_top.face_up) else 0.0,
+        _clip01(opp_top.value / 7.0) if (opp_top and opp_top.face_up) else 0.0,
         1.0 if (opp_top and not opp_top.face_up) else 0.0,
-        (my_top.value / 6.0) if (my_top and my_top.face_up) else 0.0,
+        _clip01(my_top.value / 7.0) if (my_top and my_top.face_up) else 0.0,
     ]
 
 
@@ -292,7 +292,7 @@ def extract(g, pi):
     ]
 
     hand_max, hand_min, hand_fx = _hand_shape(g, pi)
-    x += [hand_max / 6.0, hand_min / 6.0, _clip01(hand_fx / HAND_SIZE)]
+    x += [_clip01(hand_max / 7.0), _clip01(hand_min / 7.0), _clip01(hand_fx / HAND_SIZE)]
     x += [
         _clip01(_playable_face_up_count(g, pi) / HAND_SIZE),
         _clip01(_face_up_spread(g, pi) / 3.0),
@@ -308,7 +308,7 @@ def extract(g, pi):
     x += [_clip01(_board_value(g, pi) / BOARD_VALUE_SCALE),
           _clip01(_board_value(g, o) / BOARD_VALUE_SCALE)]
 
-    x.append(_clip01(_best_swing(g, pi, o) / 6.0))
+    x.append(_clip01(_best_swing(g, pi, o) / 7.0))
 
     tempo_n, control_n, lock_n, risk_n = _hand_class_totals(g, pi)
     x += [_clip01(tempo_n / HAND_SIZE), _clip01(control_n / HAND_SIZE),
