@@ -28,6 +28,16 @@
   font-style: normal;
   font-display: swap;
 }
+/* 파스텔 테마 전용 -- 둘기마요고딕(눈누 상업용 무료 폰트, projectnoonnu). 굵은
+   글씨가 따로 없는 폰트라 font-weight:700인 곳도 같은 파일이 쓰이지만,
+   둥글둥글한 인상 자체가 이미 충분히 또렷해서 시각적으로 문제없다. */
+@font-face {
+  font-family: 'Dovemayo_gothic';
+  src: url('../fonts/Dovemayo_gothic.woff2') format('woff2');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
 
 :root {
   --bg-void: #06070a;
@@ -47,6 +57,17 @@
      어둡게(밝은 text-hi와 대비), 밝은 테마는 더 밝게(어두운 text-hi와
      대비) 눌러야 항상 읽힌다. */
   --card-overlay: rgba(0, 0, 0, 0.55);
+  --card-overlay-soft: rgba(0, 0, 0, 0.22);
+  --card-overlay-strong: rgba(0, 0, 0, 0.62);
+  /* 카드를 낼 때 라인에 뜨는 앞면/뒷면 드롭존 색 -- 어두운 배경에서는
+     연한 네온 틴트만으로도 튀지만, 밝은/파스텔 테마는 아래에서 훨씬
+     진하게 다시 맞춘다(그대로 쓰면 크림색 배경에 묻혀 잘 안 보임). */
+  --drop-up-color: var(--phosphor);
+  --drop-up-bg: rgba(61, 255, 160, 0.1);
+  --drop-up-bg-hover: rgba(61, 255, 160, 0.26);
+  --drop-down-color: #7fb8ff;
+  --drop-down-bg: rgba(127, 184, 255, 0.1);
+  --drop-down-bg-hover: rgba(127, 184, 255, 0.28);
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Consolas, monospace;
   --font-display: 'Pretendard', var(--font-mono), sans-serif;
   --radius: 6px;
@@ -73,6 +94,23 @@
   --text-mid: #6b6255;
   --text-dim: #a89f8f;
   --card-overlay: rgba(255, 255, 255, 0.72);
+  --card-overlay-soft: rgba(255, 255, 255, 0.45);
+  --card-overlay-strong: rgba(255, 255, 255, 0.82);
+  /* 파스텔 모드는 각지고 차가운 터미널 느낌 대신 좀 더 둥글고 말랑한
+     '귀여운' 카드 인상을 준다 -- 모서리만 키우고 나머지 레이아웃/로직은
+     그대로 둔다. */
+  --radius: 12px;
+  /* 본문 텍스트는 둥글둥글한 손글씨풍 고딕으로 -- 카드 값 등 숫자는
+     정렬이 중요해 --font-mono(고정폭)를 그대로 둔다. */
+  --font-display: 'Dovemayo_gothic', 'Pretendard', var(--font-mono), sans-serif;
+  /* 크림색 배경 위에서는 다크 테마용 연한 네온 틴트가 거의 안 보여서,
+     색 자체를 더 진하고 채도 높게, 채움 비율도 훨씬 높게 다시 잡는다. */
+  --drop-up-color: #0a8f57;
+  --drop-up-bg: rgba(18, 168, 108, 0.28);
+  --drop-up-bg-hover: rgba(18, 168, 108, 0.44);
+  --drop-down-color: #2f6fe0;
+  --drop-down-bg: rgba(47, 111, 224, 0.24);
+  --drop-down-bg-hover: rgba(47, 111, 224, 0.4);
 }
 
 * { box-sizing: border-box; }
@@ -104,6 +142,7 @@ body {
 
 button {
   cursor: pointer;
+  font-family: inherit;
 }
 
 ::selection { background: var(--phosphor-glow); }
@@ -731,6 +770,7 @@ button {
   overflow: hidden;
   flex: 0 0 auto;
 }
+:root[data-theme="light"] .board-card { border-radius: 9px; }
 
 .board-card.covered { min-height: 24px; }
 .board-card.uncovered { min-height: 30px; }
@@ -756,8 +796,8 @@ button {
   font-size: 12px;
   line-height: 1.45;
   color: var(--text-hi);
-  background: rgba(0,0,0,0.55);
-  border-top: 1px solid rgba(255,255,255,0.1);
+  background: var(--card-overlay);
+  border-top: 1px solid var(--line-hair);
   position: relative;
 }
 
@@ -773,13 +813,13 @@ button {
   opacity: 0.85;
 }
 
-.board-card .card-band-top { background: rgba(0,0,0,0.4); }
-.board-card .card-band-mid { background: rgba(0,0,0,0.62); }
-.board-card .card-band-bot { background: rgba(0,0,0,0.4); }
+.board-card .card-band-top { background: var(--card-overlay); }
+.board-card .card-band-mid { background: var(--card-overlay-strong); }
+.board-card .card-band-bot { background: var(--card-overlay); }
 
 .board-card .card-band-empty {
   min-height: 26px;
-  background: rgba(0,0,0,0.22) !important;
+  background: var(--card-overlay-soft) !important;
 }
 
 .board-card .card-band-empty::before { opacity: 0.3; }
@@ -836,6 +876,7 @@ button {
   overflow: hidden;
   cursor: grab;
 }
+:root[data-theme="light"] .hand-cards .card { border-radius: 10px; }
 
 .hand-cards .card:active { cursor: grabbing; }
 
@@ -936,7 +977,7 @@ button {
   justify-content: space-between;
   padding: 10px 12px;
   border-radius: 6px;
-  background: rgba(0,0,0,0.5);
+  background: var(--card-overlay);
   border: 1.5px solid var(--ci-accent, var(--phosphor-dim));
   margin-bottom: 10px;
 }
@@ -945,7 +986,7 @@ button {
 .ci-value { font-family: var(--font-mono); font-weight: 700; font-size: 22px; color: var(--ci-accent, var(--phosphor)); }
 
 .ci-band {
-  background: rgba(0,0,0,0.6);
+  background: var(--card-overlay-strong);
   border: 1px solid var(--ci-accent, var(--line-hair));
   border-radius: 6px;
   padding: 10px 12px;
@@ -1112,12 +1153,9 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 10px;
+  font-size: 13px;
   font-weight: 700;
   letter-spacing: 1px;
-  color: var(--phosphor);
-  background: rgba(61,255,160,0.08);
-  border: 2px solid var(--phosphor);
   border-radius: 5px;
   cursor: pointer;
   z-index: 5;
@@ -1303,6 +1341,11 @@ button {
 .draft-card:hover {
   transform: translateY(-3px);
   box-shadow: 0 8px 22px rgba(0,0,0,0.5), 0 0 16px var(--phosphor-glow);
+}
+:root[data-theme="light"] .draft-card { border-radius: 14px; }
+:root[data-theme="light"] .draft-card:hover {
+  /* 다크 테마의 짙은 검은 그림자 대신 종이 톤과 어울리는 옅고 따뜻한 그림자 */
+  box-shadow: 0 8px 22px rgba(120,95,55,0.18), 0 0 16px var(--phosphor-glow);
 }
 
 .draft-card .dc-tagline {
@@ -1494,6 +1537,7 @@ button {
   border: 1.5px solid var(--card-accent, var(--line-hair));
   background: var(--bg-card-back);
 }
+:root[data-theme="light"] .codex-card { border-radius: 14px; }
 
 .codex-card .cc-header {
   flex: 0 0 auto;
@@ -1510,6 +1554,7 @@ button {
      있었음. */
   border-radius: 6px 6px 0 0;
 }
+:root[data-theme="light"] .codex-card .cc-header { border-radius: 14px 14px 0 0; }
 
 .codex-card .cc-header .cc-value { font-family: var(--font-mono); font-size: 18px; }
 
@@ -1522,8 +1567,8 @@ button {
   padding: 8px 10px 8px 13px;
   font-size: 12px;
   line-height: 1.5;
-  border-top: 1px solid rgba(255,255,255,0.1);
-  background: rgba(0,0,0,0.4);
+  border-top: 1px solid var(--line-hair);
+  background: var(--card-overlay);
   position: relative;
 }
 
@@ -1541,13 +1586,14 @@ button {
 
 .codex-card .cc-band-empty {
   min-height: 64px;
-  background: rgba(0,0,0,0.2);
+  background: var(--card-overlay-soft);
 }
 .codex-card .cc-band-empty::before { opacity: 0.3; }
 
 .codex-card .cc-band:last-child {
   border-radius: 0 0 6px 6px;
 }
+:root[data-theme="light"] .codex-card .cc-band:last-child { border-radius: 0 0 14px 14px; }
 
 /* ==========================================================================
    버림더미/덱 열람 모달
@@ -1763,7 +1809,7 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: 1px;
   border-radius: 5px;
@@ -1772,37 +1818,37 @@ button {
 }
 
 .drop-zone-label.face-up {
-  color: var(--phosphor);
-  border: 2px solid var(--phosphor);
-  background: rgba(61,255,160,0.06);
+  color: var(--drop-up-color);
+  border: 2.5px solid var(--drop-up-color);
+  background: var(--drop-up-bg);
 }
 
 .drop-zone-label.face-down {
-  color: #7fb8ff;
-  border: 2px solid #7fb8ff;
-  background: rgba(127,184,255,0.08);
+  color: var(--drop-down-color);
+  border: 2.5px solid var(--drop-down-color);
+  background: var(--drop-down-bg);
 }
 
 .drop-half.up {
-  border-color: var(--phosphor);
-  color: var(--phosphor);
-  background: rgba(61,255,160,0.08);
+  border: 2.5px solid var(--drop-up-color);
+  color: var(--drop-up-color);
+  background: var(--drop-up-bg);
 }
 
 .drop-half.down {
-  border-color: #7fb8ff;
-  color: #7fb8ff;
-  background: rgba(127,184,255,0.1);
+  border: 2.5px solid var(--drop-down-color);
+  color: var(--drop-down-color);
+  background: var(--drop-down-bg);
 }
 
 .drop-half.up:hover, .drop-half.up.drag-over {
-  background: rgba(61,255,160,0.24);
+  background: var(--drop-up-bg-hover);
   box-shadow: 0 0 14px var(--phosphor-glow);
 }
 
 .drop-half.down:hover, .drop-half.down.drag-over {
-  background: rgba(127,184,255,0.26);
-  box-shadow: 0 0 14px rgba(127,184,255,0.6);
+  background: var(--drop-down-bg-hover);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--drop-down-color) 60%, transparent);
 }
 
 /* ==========================================================================
