@@ -6,19 +6,18 @@
 것" 참고 -- 손튜닝 `ISMCTSAI`도, 기존 gen1 선형 프리셋도 이 작업으로
 안 바뀜).
 
-가중치(`src/game/data/eval_weights_mlp.npz`)는 `selfplay_gen3.npz`
-(HeuristicAI 자기대국 1만 판, 다양성 주입, Main3/Aux3 포함 45개
-프로토콜 전부, 2026-08-02 생성)로 학습한 소형 MLP다 --
-260801_mlp.md §3.2 파일럿에서 같은 데이터의 로지스틱 회귀 대비 검증
-로그손실 -0.0172(0.5852 -> 0.5681, 은닉층 (64,), alpha=0.0001)를
-확인했다.
+가중치(`src/game/data/eval_weights_mlp.npz`)는 2026-08-07에 109차원
+상태 특징(손패 잠재력/지속효과 부호값/전역 뒷면수 포함, `260807_
+port_from_lua.md`)으로 새로 학습해 교체됐다(그 전엔 97차원
+`selfplay_gen3.npz` 기준).
 
-`DEFAULT_EVAL_SCALE=3.1`은 5.3절 방식(실제 로짓 분포 실측, 무작위
-5만 표본)으로 역산: 평균≈-0.01, 표준편차≈1.41, |로짓| p95≈3.08,
-p99≈4.53(gen1 선형 모델의 표준편차≈1.16/p95≈1.9보다 폭이 넓다 --
-비선형이라 극값이 더 극단적으로 나온다는 계획서 §5.3의 예상과
-일치). gen1의 `eval_scale=2.0`을 그대로 썼다면 이 분포에서 tanh가
-너무 일찍 포화돼 탐색 신호가 뭉개졌을 것.
+`DEFAULT_EVAL_SCALE=3.24`는 이 109차원 모델의 실제 로짓 분포를
+실측(무작위 5만 표본)해서 역산한 값이다: 표준편차≈1.499, p95≈3.24
+(97차원 시절 모델은 표준편차≈1.41/p95≈3.08이었다 -- 특징이 늘면서
+극값이 조금 더 넓게 퍼짐). 이 재보정은 2026-08-07 신구 모델 비교
+작업 중 실측됐지만 이 파일에는 한동안 반영이 안 돼 있었고(옛 3.1
+그대로), 2026-08-08에 뒤늦게 반영했다(`260808_값망_정책망_완전정리.md`
+부록 참고).
 
 `DEFAULT_LEGIBLE_EPS=0.04`는 루트 가독성 동점 처리(`ISMCTSAI`의
 `legible_eps` 참고)의 허용 오차값 -- 더 크게 잡으면 탐색이 실제로 선호
@@ -48,7 +47,7 @@ from src.game.ai_ismcts import ISMCTSAI
 from src.game.ai_sim import evaluate_learned_mlp, load_mlp_weights
 
 DEFAULT_MLP_WEIGHTS_PATH = Path(__file__).resolve().parent / "data" / "eval_weights_mlp.npz"
-DEFAULT_MLP_EVAL_SCALE = 3.1
+DEFAULT_MLP_EVAL_SCALE = 3.24
 DEFAULT_ITERATIONS = 300
 DEFAULT_LEGIBLE_EPS = 0.04
 DEFAULT_REARRANGE_ITERATIONS = 120
