@@ -260,6 +260,7 @@ function showPileModal(title, cards) {
   $("#pile-modal-close").textContent = "닫기";
   $("#pile-modal-close").style.visibility = "visible";
   showcaseOnClose = null;
+  pileModalMandatory = false;
   $("#pile-modal").classList.remove("hidden");
 }
 
@@ -269,6 +270,12 @@ let pileModalResolve = null;
 // "선택 안 함"으로 동작해야 하는 경우의 콜백. 카드 클릭으로 이미 답했으면
 // null로 비워서 중복 응답을 막는다.
 let showcaseOnClose = null;
+// true면 지금 열린 모달이 "반드시 후보 카드 하나를 클릭해서 답해야 하는"
+// 필수 프롬프트라는 뜻 -- 닫기 버튼도 숨겨져 있으니(renderShowcasePrompt의
+// optional 분기 참고), 바깥(배경) 클릭으로도 답 없이 닫혀버리면 안 된다
+// (닫히면 서버는 계속 답을 기다리는데 화면엔 다시 열 방법이 없어 진행
+// 불가 상태가 됨 -- 실제로 보고된 버그).
+let pileModalMandatory = false;
 
 function showPileModalAndWait(title, cards) {
   showPileModal(title, cards);
@@ -314,6 +321,7 @@ function renderShowcasePrompt(state, req, who) {
   $("#pile-modal-close").textContent = "선택 안 함";
   $("#pile-modal-close").style.visibility = optional ? "visible" : "hidden";
   showcaseOnClose = optional ? () => submitAnswer(null) : null;
+  pileModalMandatory = !optional;
   $("#pile-modal").classList.remove("hidden");
 }
 
@@ -323,7 +331,10 @@ $("#discard-p1").addEventListener("click", () => openDiscardModal(1));
 $("#discard-p2").addEventListener("click", () => openDiscardModal(2));
 $("#pile-modal-close").addEventListener("click", closePileModal);
 $("#pile-modal").addEventListener("click", (ev) => {
-  if (ev.target.id === "pile-modal") closePileModal();
+  // 필수 프롬프트(명료3류 "덱에서 카드 낚기" 등)는 후보 카드를 직접 눌러야만
+  // 답이 제출된다 -- 배경 클릭으로 답 없이 닫히면 서버는 계속 대기 중인데
+  // 화면엔 다시 열 방법이 없어 진행 불가 상태가 된다(pileModalMandatory 참고).
+  if (ev.target.id === "pile-modal" && !pileModalMandatory) closePileModal();
 });
 
 async function startGame(mode, draftedProtocols) {
