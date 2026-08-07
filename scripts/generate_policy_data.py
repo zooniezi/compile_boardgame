@@ -31,6 +31,7 @@ from src.game.engine import Engine
 from src.game.ai_heuristic import HeuristicAI
 from src.game.ai_features import extract as extract_state, feature_count as state_feature_count
 from src.game.ai_action_features import extract as extract_action, feature_count as action_feature_count
+from src.game.ai_prior import score_action
 from src.game import protocols as P
 
 MAX_STEPS = 20000
@@ -69,7 +70,8 @@ class RecordingAI:
                 gid = self._gid
                 self._gid += 1
                 for a in acts:
-                    af = extract_action(g, pi, a)
+                    hs = score_action(g, pi, a)
+                    af = extract_action(g, pi, a, hs)
                     self.rows.append((sf, af, 1.0 if a == chosen else 0.0, gid))
             return chosen
         return self.inner.decide(g, req)

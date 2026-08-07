@@ -16,6 +16,7 @@ import numpy as np
 
 from src.game.ai_features import extract as extract_state
 from src.game.ai_action_features import extract as extract_action
+from src.game.ai_prior import score_action
 
 _policy_weights_cache = {}
 
@@ -52,7 +53,8 @@ def action_scores(g, pi, actions, w):
     sf = np.asarray(extract_state(g, pi), dtype=np.float64)
     out = []
     for a in actions:
-        af = np.asarray(extract_action(g, pi, a), dtype=np.float64)
+        hs = score_action(g, pi, a)
+        af = np.asarray(extract_action(g, pi, a, hs), dtype=np.float64)
         x = np.concatenate([sf, af])
         out.append(_forward(x, w))
     return out

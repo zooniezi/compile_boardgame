@@ -50,6 +50,7 @@ from src.game.ai_ismcts_policy import load_policy_weights
 from src.game.ai_sim import evaluate_learned_mlp, load_mlp_weights
 from src.game.ai_features import extract as extract_state, feature_count as state_feature_count
 from src.game.ai_action_features import extract as extract_action, feature_count as action_feature_count
+from src.game.ai_prior import score_action
 from src.game import protocols as P
 from scripts.parallel_utils import limit_blas_threads, run_parallel
 
@@ -98,7 +99,8 @@ class RLRecordingAI:
                 self._gid += 1
                 total = sum(v for _, v in visits)
                 for action, v in visits:
-                    af = extract_action(g, pi, action)
+                    hs = score_action(g, pi, action)
+                    af = extract_action(g, pi, action, hs)
                     self.policy_rows.append((sf, af, v / total, gid))
                 temperature = 1.0 if self._move_count < self.temp_moves else 0.0
                 self._move_count += 1
