@@ -28,15 +28,12 @@ mcts 탐색을 전부 갖춘 가장 상위 스택이라 여기서만 기본으�
 중급(`ISMCTSLearnedAI`)과 손튜닝 `ISMCTSAI`는 기본값 None(꺼짐)을
 그대로 둔다.
 
-`DEFAULT_ITERATIONS=300`은 lua/ai_expert.lua의 `mcts.iters=300`과 맞춘
-값(기존엔 `ISMCTSAI` 기본값 200을 그대로 물려받고 있었음). Lua는
-150->300에서 60.0% ±6.8 유의미 우세(n=200, 학습된 eval이 포지션을
-구별할 수 있게 된 뒤부터), 300->900은 53.3% ±5.6(사실상 노이즈)로
-포화를 실측했다(같은 파일 주석 참고) -- 200->300은 그 "확실히 이득"
-구간(150~300) 안에 들어간다. 실측 지연시간(중반 국면 5회 샘플): 200회
-0.6~1.0초, 300회 1.0~1.2초 -- 한 수당 +0.3초 정도로, 이미 AI 턴마다
-걸려있는 연출 지연(`aiTurnPace`, web/static/js/app.js)보다 작아
-체감상 무시할 만한 수준이다.
+`DEFAULT_ITERATIONS=300`은 실측 아레나(200 vs 300, 미러 페어 40쌍/80판)
+에서 300이 58.8% ±8.5%로 유의미하게 우세했던 결과를 반영한 기본값
+(기존엔 `ISMCTSAI` 기본값 200을 그대로 물려받고 있었음). 실측
+지연시간(중반 국면 5회 샘플): 200회 0.6~1.0초, 300회 1.0~1.2초 --
+한 수당 +0.3초 정도로, 이미 AI 턴마다 걸려있는 연출 지연(`aiTurnPace`,
+web/static/js/app.js)보다 작아 체감상 무시할 만한 수준이다.
 
 `DEFAULT_REARRANGE_ITERATIONS=120`은 이 프리셋의 기본 `iterations`
 (300)의 약 0.4배). 메인 탐색보다 훨씬 저렴한 예산으로도
@@ -61,8 +58,8 @@ class ISMCTSMLPAI(ISMCTSAI):
     """`ISMCTSAI`와 완전히 같은 인터페이스지만, 기본 `eval_fn`이 학습된
     소형 MLP 평가함수고 탐색 예산(`iterations`)/루트 가독성 동점 처리
     (`legible_eps`)/Control 재배치 서브탐색(`rearrange_iterations`)이
-    Lua Expert에 맞춰 기본으로 켜져 있다. 다른 인자는 그대로 오버라이드
-    가능."""
+    이 프로젝트에서 가장 강한 조합으로 기본 켜져 있다. 다른 인자는
+    그대로 오버라이드 가능."""
 
     def __init__(self, weights_path=DEFAULT_MLP_WEIGHTS_PATH,
                  eval_scale=DEFAULT_MLP_EVAL_SCALE, **kwargs):

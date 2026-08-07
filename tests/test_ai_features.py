@@ -33,11 +33,12 @@ def test_feature_count_matches_names():
     assert feature_count() == len(FEATURE_NAMES)
 
 
-def test_feature_count_is_97():
+def test_feature_count_is_109():
     """특징 확장(위협권/한 수 컴파일/라인 맨 위 정체/cantCompile/liveTops/
-    라인당 스택 장수/내 뒷면 카드 실제 값 등) 이후 기대 차원 수. 실수로
-    특징이 빠지거나 중복 추가되면 여기서 걸린다."""
-    assert feature_count() == 97
+    라인당 스택 장수/내 뒷면 카드 실제 값/손패 잠재력 4분류/지속효과 부호값/
+    전역 뒷면 카드 수 등) 이후 기대 차원 수. 실수로 특징이 빠지거나 중복
+    추가되면 여기서 걸린다."""
+    assert feature_count() == 109
 
 
 def test_extract_always_returns_fixed_length_and_bounded_values():
@@ -93,6 +94,84 @@ def test_hand_potential_reflects_tagged_cards():
     x = extract(e, 1)
     idx = FEATURE_NAMES.index("hand_del")
     assert x[idx] > 0
+
+
+def test_hand_class_features_reflect_tagged_cards():
+    """손패 잠재력 4분류(tempo/control/lock/risk) 태그가 붙은 카드가
+    손패에 있으면 해당 특징이 0보다 커야 한다."""
+    e = Engine(protocols1=["Water", "Speed", "Rigid"], protocols2=["Ice", "Metal", "Death"])
+    e.players[1]["hand"] = [
+        e.new_card("Speed", 0, 1),   # tempo(extra_play 자동 추론)
+        e.new_card("Water", 2, 1),   # control(수동 오버라이드)
+        e.new_card("Rigid", 7, 1),   # risk(ongoing<0 자동 추론)
+    ]
+    x = extract(e, 1)
+    idx = {name: i for i, name in enumerate(FEATURE_NAMES)}
+    assert x[idx["hand_tempo"]] > 0
+    assert x[idx["hand_control"]] > 0
+    assert x[idx["hand_risk"]] > 0
+    assert x[idx["hand_lock"]] == 0  # 이 손패엔 lock 카드가 없음
+
+
+def test_signed_ongoing_features_distinguish_liability_from_asset():
+    """불리언 존재 카운트(my_board_ongoing)만으론 손해(Rigid_7)와
+    이득(Metal_0)이 구별 안 됐던 문제의 해결. 같은 my_board_ongoing=1
+    이어도 부호값 특징은 서로 반대 부호여야 한다."""
+    e_bad = Engine(protocols1=["Rigid", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    rigid7 = e_bad.new_card("Rigid", 7, 1)
+    rigid7.face_up = True
+    e_bad.players[1]["stacks"][1].append(rigid7)
+    x_bad = extract(e_bad, 1)
+
+    e_good = Engine(protocols1=["Metal", "Water", "Fire"], protocols2=["Ice", "Metal", "Death"])
+    metal0 = e_good.new_card("Metal", 0, 1)
+    metal0.face_up = True
+    e_good.players[1]["stacks"][1].append(metal0)
+    x_good = extract(e_good, 1)
+
+    idx = {name: i for i, name in enumerate(FEATURE_NAMES)}
+    # 기존 불리언 카운트로는 둘 다 "지속효과 하나 있음"으로 동일하게 잡힘.
+    assert x_bad[idx["my_board_ongoing"]] == x_good[idx["my_board_ongoing"]]
+    # 부호값 특징은 서로 반대 부호여야 함.
+    assert x_bad[idx["my_ongoing_signed"]] < 0
+    assert x_good[idx["my_ongoing_signed"]] > 0
+    assert x_bad[idx["my_active_ongoing_signed"]] < 0
+    assert x_good[idx["my_active_ongoing_signed"]] > 0
+
+
+def test_board_facedown_count_sums_across_all_lines():
+    """라인별로 흩어진 뒷면 카드 수를 전역 특징 하나로 합산."""
+    e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
+    for line in (1, 2, 3):
+        e.players[1]["stacks"][line].append(e.new_card("Water", 0, 1))  # 기본 뒷면
+    x = extract(e, 1)
+    idx = FEATURE_NAMES.index("my_facedown_count")
+    assert x[idx] == 3 / 6.0
+
+
+def test_opp_one_move_uses_real_facedown_value_not_fixed_two():
+    """회귀 테스트: 상대 라인에 Darkness_2(facedownValueThisStack=4)가
+    있으면 '뒷면 한 장으로 컴파일' 판정이 고정값 2가 아니라 실제 값
+    4를 써야 한다."""
+    from src.game.rules import COMPILE_THRESHOLD
+    from src.game.ai_features import _line_block
+
+    def opp_one_move(with_darkness2):
+        e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Darkness", "Metal", "Death"])
+        if with_darkness2:
+            d2 = e.new_card("Darkness", 2, 2)
+            d2.face_up = True
+            e.players[2]["stacks"][1].append(d2)
+        # 라인 값이 딱 (COMPILE_THRESHOLD - 4): 뒷면 보정 없이(2)는 컴파일권
+        # 미달, Darkness_2 보정(4)이 있으면 성립하는 경계.
+        filler = e.new_card("Metal", COMPILE_THRESHOLD - 4, 2)
+        filler.face_up = True
+        e.players[2]["stacks"][1].append(filler)
+        block = _line_block(e, 1, 2, 1, hand_max=0)
+        return block[FEATURE_NAMES.index("line1_opp_one_move") - FEATURE_NAMES.index("line1_my_val")]
+
+    assert opp_one_move(with_darkness2=False) == 0.0
+    assert opp_one_move(with_darkness2=True) == 1.0
 
 
 def test_lines_are_sorted_by_my_advantage_not_by_line_number():

@@ -30,7 +30,7 @@
 """
 
 from src.game.rules import COMPILE_THRESHOLD, HAND_SIZE
-from src.game.ai_prior import TAGS
+from src.game.ai_prior import TAGS, hand_class, ongoing_value, persists_when_covered
 
 DECK_TOTAL = 18  # 프로토콜 3개 x 카드 6장 (손패 포함, 초기 덱+손패 합계)
 LINE_VALUE_SCALE = 15.0  # 라인 값이 실전에서 대략 이 범위 안에 들어옴
@@ -45,6 +45,12 @@ def _other(pi):
 
 def _clip01(x):
     return max(0.0, min(1.0, x))
+
+
+def _clip_signed(x):
+    """부호 있는 특징(지속효과 부호값처럼 플러스=이득/마이너스=손해)용 --
+    _clip01처럼 0~1로 자르면 부호 정보 자체가 사라지므로 [-1, 1]로 자른다."""
+    return max(-1.0, min(1.0, x))
 
 
 def _hand_potential(g, pi):
@@ -80,6 +86,24 @@ def _hand_potential(g, pi):
         (total_value / n) / 6.0,  # 카드 값은 보통 0~6
         shift_n / n, opp_disc_n / n, disc_cost_n / n,
     ]
+
+
+def _hand_class_totals(g, pi):
+    """손패의 "무형 잠재력" 4분류 집계. 일반적인 값/동사 카운트로는 안
+    잡히는 신호: 공짜 템포, 제어권 조작, 컴파일 봉쇄력, 손해를 감수하는
+    카드."""
+    tempo_n = control_n = lock_n = risk_n = 0
+    for c in g.players[pi]["hand"]:
+        hc = hand_class(c)
+        if hc["tempo"]:
+            tempo_n += 1
+        if hc["control"]:
+            control_n += 1
+        if hc["lock"]:
+            lock_n += 1
+        if hc["risk"]:
+            risk_n += 1
+    return tempo_n, control_n, lock_n, risk_n
 
 
 def _hand_shape(g, pi):
@@ -136,10 +160,25 @@ def _board_value(g, pi):
     return total
 
 
+def _board_facedown_count(g, pi):
+    """보드 위(3라인 전체) 뒷면 카드 장수. 라인별 뒷면 수는 이미 라인
+    블록에 있지만, "판 전체적으로 뒷면이 얼마나 깔려있나"는 그 3개를
+    모델이 스스로 더해야만 알 수 있던 신호라 전역 특징으로 따로 낸다."""
+    n = 0
+    for line in (1, 2, 3):
+        for c in g.players[pi]["stacks"][line]:
+            if not c.face_up:
+                n += 1
+    return n
+
+
 def _exposure(g, pi):
     """pi의 라인 맨 위 카드들의 텍스처: 앞면 값 합계, 지속효과(ongoing) 카드
-    수, 뒷면 맨 위 카드 수. 전부 공개 정보(맨 위 카드는 항상 관측 가능)."""
+    수, 뒷면 맨 위 카드 수, 그리고 지속효과의 부호값(플러스=이득/마이너스=
+    손해)을 "지금 활성"과 "덮여도 지속"으로 나눈 것. 전부 공개 정보
+    (맨 위 카드는 항상 관측 가능, 덮인 카드도 앞면이면 정체는 공개 정보)."""
     val, ongoing, fd_tops = 0, 0, 0
+    active_value = covered_value = 0.0
     for line in (1, 2, 3):
         top = g.top_card(pi, line)
         if top:
@@ -148,9 +187,14 @@ def _exposure(g, pi):
                 tag = TAGS.get(f"{top.proto}_{top.value}", {})
                 if tag.get("ongoing"):
                     ongoing += 1
+                    active_value += ongoing_value(g, top)
             else:
                 fd_tops += 1
-    return val, ongoing, fd_tops
+        # 맨 위(uncovered)를 뺀 나머지 -- 덮여도 지속되는 top 밴드 부채/자산만.
+        for c in g.players[pi]["stacks"][line][:-1]:
+            if c.face_up and persists_when_covered(c):
+                covered_value += ongoing_value(g, c)
+    return val, ongoing, fd_tops, active_value, covered_value
 
 
 def _best_swing(g, pi, o):
@@ -205,9 +249,13 @@ def _line_block(g, pi, o, line, hand_max):
         # 이 라인에 쌓인 카드 장수 (양쪽) -- 값이 아니라 "규모" 자체의 신호
         min(len(g.players[pi]["stacks"][line]), 5) / 5.0,
         min(len(g.players[o]["stacks"][line]), 5) / 5.0,
-        # 한 수 컴파일: 내 손패 최댓값 한 장 / 상대는 뒷면 2 한 장이면 컴파일권
+        # 한 수 컴파일: 내 손패 최댓값 한 장 / 상대는 뒷면 카드 한 장이면 컴파일권
+        # (뒷면 값은 보통 2지만 Darkness_2가 이 스택에 있으면 4 -- 고정값
+        # 대신 반드시 g.facedown_value_in_stack()으로 실제 값을 구해야 함).
         1.0 if (not my_compiled and mv + hand_max >= T and mv + hand_max > ov) else 0.0,
-        1.0 if (not opp_compiled and ov + 2 >= T and ov + 2 > mv) else 0.0,
+        1.0 if (not opp_compiled
+                and ov + g.facedown_value_in_stack(g.players[o]["stacks"][line]) >= T
+                and ov + g.facedown_value_in_stack(g.players[o]["stacks"][line]) > mv) else 0.0,
         # 라인 맨 위 카드의 정체 (앞면이면 값, 상대는 뒷면 여부도)
         (opp_top.value / 6.0) if (opp_top and opp_top.face_up) else 0.0,
         1.0 if (opp_top and not opp_top.face_up) else 0.0,
@@ -251,8 +299,8 @@ def extract(g, pi):
     ]
     x += [_clip01(_live_tops(g, pi) / 3.0), _clip01(_live_tops(g, o) / 3.0)]
 
-    my_exp, my_ongoing, _my_fd_tops = _exposure(g, pi)
-    opp_exp, opp_ongoing, opp_fd_tops = _exposure(g, o)
+    my_exp, my_ongoing, _my_fd_tops, my_active_value, my_covered_value = _exposure(g, pi)
+    opp_exp, opp_ongoing, opp_fd_tops, opp_active_value, opp_covered_value = _exposure(g, o)
     x += [_clip01(my_exp / EXPOSURE_SCALE), _clip01(opp_exp / EXPOSURE_SCALE),
           _clip01(opp_fd_tops / 3.0)]
     x += [_clip01(my_ongoing / 3.0), _clip01(opp_ongoing / 3.0)]
@@ -261,6 +309,22 @@ def extract(g, pi):
           _clip01(_board_value(g, o) / BOARD_VALUE_SCALE)]
 
     x.append(_clip01(_best_swing(g, pi, o) / 6.0))
+
+    tempo_n, control_n, lock_n, risk_n = _hand_class_totals(g, pi)
+    x += [_clip01(tempo_n / HAND_SIZE), _clip01(control_n / HAND_SIZE),
+          _clip01(lock_n / HAND_SIZE), _clip01(risk_n / HAND_SIZE)]
+
+    # 지속효과 부호값(플러스=이득/마이너스=손해). 불리언 존재 카운트
+    # (my_board_ongoing 등)만으론 Rigid_7(손해)과 Metal_0(이득)이 구별이
+    # 안 됐던 문제의 해결. 부호 있는 값이라 클립 없이 스케일만 맞춘다
+    # (다른 신호처럼 0~1로 자르면 부호 정보가 죽음, _clip_signed로 [-1,1]만 보장).
+    x += [_clip_signed((my_active_value + my_covered_value) / 6.0),
+          _clip_signed((opp_active_value + opp_covered_value) / 6.0),
+          _clip_signed(my_active_value / 6.0), _clip_signed(opp_active_value / 6.0),
+          _clip_signed(my_covered_value / 6.0), _clip_signed(opp_covered_value / 6.0)]
+
+    # 보드 전체 뒷면 카드 수(라인 합산).
+    x += [_clip01(_board_facedown_count(g, pi) / 6.0), _clip01(_board_facedown_count(g, o) / 6.0)]
 
     # 라인은 "내가 유리한 순서"로 정렬 -- 번호 자체는 의미가 없으므로.
     lines_sorted = sorted((1, 2, 3),
@@ -288,6 +352,11 @@ FEATURE_NAMES = (
     + ["my_board_ongoing", "opp_board_ongoing"]
     + ["my_board_value", "opp_board_value"]
     + ["best_swing"]
+    + ["hand_tempo", "hand_control", "hand_lock", "hand_risk"]
+    + ["my_ongoing_signed", "opp_ongoing_signed",
+       "my_active_ongoing_signed", "opp_active_ongoing_signed",
+       "my_covered_persistent_signed", "opp_covered_persistent_signed"]
+    + ["my_facedown_count", "opp_facedown_count"]
     + [f"line{rank}_{name}" for rank in (1, 2, 3) for name in
        ("my_val", "opp_val", "diff", "my_compiled", "opp_compiled",
         "my_ready", "opp_ready", "my_facedown", "opp_facedown",

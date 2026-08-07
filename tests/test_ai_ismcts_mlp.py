@@ -97,9 +97,9 @@ def test_default_construction_wires_rearrange_search():
     assert ISMCTSAI(iterations=1).rearrange_iterations is None
 
 
-def test_default_construction_wires_iterations_to_lua_expert_value():
-    """iterations 인자를 아예 안 주면 lua/ai_expert.lua의 mcts.iters=300과
-    맞춘 DEFAULT_ITERATIONS(=300)이 기본값으로 들어가야 한다 -- 예전엔
+def test_default_construction_wires_iterations_to_measured_best_value():
+    """iterations 인자를 아예 안 주면 실측 아레나로 확인한 최적값을 반영한
+    DEFAULT_ITERATIONS(=300)이 기본값으로 들어가야 한다 -- 예전엔
     ISMCTSAI 기본값 200을 그대로 물려받고 있었다."""
     ai = ISMCTSMLPAI(eval_scale=DEFAULT_MLP_EVAL_SCALE)
     assert ai.iterations == DEFAULT_ITERATIONS == 300

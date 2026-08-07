@@ -101,7 +101,7 @@ def test_rigid_7_facedown_or_covered_can_be_moved():
 
 def test_rigid_7_protection_suppressed_by_inert_1_in_same_line():
     """Inert_1(suppressOtherBottom)이 같은 라인에 있으면 Rigid_7의
-    cantMove/cantFlip 보호도 무시돼야 한다(Lua bandSuppressedFor와 동일)."""
+    cantMove/cantFlip 보호도 무시돼야 한다."""
     from src.game.engine import Engine
     e = Engine(protocols1=["Water", "Fire", "Life"], protocols2=["Ice", "Metal", "Death"])
     rigid7 = neutral_card(e, "Rigid", 7, 1)

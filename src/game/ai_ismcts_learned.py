@@ -6,16 +6,15 @@
 `eval_scale`을 손으로 조립하지 않고 바로 재사용할 수 있게 만든
 프리셋이다.
 
-가중치(`src/game/data/eval_weights_plain.npz`)는 다양성 주입(자기대국
-4000판, `ai_howtodiversity.md`)이 적용된 데이터로 학습한 97차원 plain
-모델이다 — 교차항 확장 모델은 `ai_regularization.md`에서 확인했듯
-plain과 통계적으로 대등할 뿐 더 낫지 않고 판당 비용도 커서(추론 시
-`expand_features()` 호출 필요) 기본 프리셋으로는 plain을 쓴다.
+가중치(`src/game/data/eval_weights_plain.npz`)는 109차원 특징(손패
+잠재력 4종/지속효과 부호값/전역 뒷면수 포함) 기준으로 학습한 plain
+로지스틱 모델이다 — 교차항 확장 모델은 plain과 통계적으로 대등할
+뿐 더 낫지 않고 판당 비용도 커서(추론 시 `expand_features()` 호출
+필요) 기본 프리셋으로는 plain을 쓴다.
 
-`eval_scale=2.0`은 이 가중치의 실제 로짓 분포(평균≈0, 표준편차≈1.16,
-p95≈1.9)를 실측해서 역산한 값이다(`ai_train_pipeline.md` Phase 3
-진행 상황 참고) — 다른 가중치 파일로 바꿔 쓰려면 이 값도 다시
-실측해야 한다.
+`eval_scale=2.5`는 이 가중치의 실제 로짓 분포(자기대국 표본 5만 개
+실측: 평균≈0, 표준편차≈1.17, p95≈2.46)를 실측해서 역산한 값이다 —
+다른 가중치 파일로 바꿔 쓰려면 이 값도 다시 실측해야 한다.
 """
 
 from pathlib import Path
@@ -24,7 +23,7 @@ from src.game.ai_ismcts import ISMCTSAI
 from src.game.ai_sim import evaluate_learned, load_eval_weights
 
 DEFAULT_WEIGHTS_PATH = Path(__file__).resolve().parent / "data" / "eval_weights_plain.npz"
-DEFAULT_EVAL_SCALE = 2.0
+DEFAULT_EVAL_SCALE = 2.5
 
 
 class ISMCTSLearnedAI(ISMCTSAI):

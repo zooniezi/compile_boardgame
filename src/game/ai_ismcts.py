@@ -375,21 +375,20 @@ def _apply_legibility_tiebreak(g, pi0, root, best_key, legible_eps):
 # 컴파일 봉쇄(compile_available_next_check)를 모르는 채로 학습됐다 -- 손튜닝
 # evaluate()는 0단계에서 이미 이 봉쇄를 gate했지만(w["ready"] 대신
 # w["lead"]로 폴백하는 조건부 스위칭), 학습 모델은 원시 로짓 스케일이
-# evaluate()의 Sim.W 스케일(compiled=100 등)과 대응되지 않아 그 수정을
-# 그대로 옮길 수 없어 미뤄뒀었다(260803_ai_lua_vs_python_analysis.md 0단계
-# "의도적으로 보류한 부분" 참고).
+# evaluate()의 가중치 스케일(w["compiled"]=100 등)과 대응되지 않아 그
+# 수정을 그대로 옮길 수 없어 미뤄뒀었다.
 #
-# 이 보정은 Lua Sim.evaluateLearnedWithWeights의 compileRulesCorrection을
-# 이식한 것 -- 다만 Lua는 원시 로짓을 *100 해서 Sim.W와 같은 단위로 맞춘 뒤
-# 그 스케일(ready-lead=47, oppReady-oppBrew=37)로 보정을 더하는데, Python
-# 학습 모델의 원시 로짓은 그 100-스케일과 직접 대응되지 않는다. 그래서
-# 원시 점수가 아니라 tanh 압축 이후의 최종 보상([-1,1]) 공간에서 직접
-# 보정한다 -- Lua도 결국 이 압축(ai_mcts.lua의 squash(s)=0.5+0.5*tanh(s/120))
-# 을 거쳐 [0,1] MCTS 보상으로 쓰이므로, Lua의 보정이 그 압축의 원점 근방
-# 기울기(0.5/120)를 통과했을 때 만드는 효과(-47/240=-0.196, +37/240=+0.154,
-# [0,1] 스케일)를 Python의 [-1,1] 스케일(폭이 2배)로 환산한 값을 반올림해서
-# 쓴다. 정확한 재학습/재보정이 아니라 근사이므로, 실제 도움이 되는지는
-# 아레나로 검증한다(260805_lockcorrection.md 참고).
+# 이 보정은 손튜닝 evaluate()가 이미 하는 것과 같은 취지(false lead를
+# 깎거나 올림)를 학습 모델에도 적용한 것이다. evaluate()의 가중치 스케일
+# (w["ready"]=50, w["lead"]=3, w["opp_ready"]=45, w["opp_brew"]=8)로
+# 보정 크기를 잡으면 내 false lead는 -(50-3)=-47, 상대 false lead는
+# +(45-8)=+37인데, 학습 모델의 원시 로짓은 이 100-스케일과 직접
+# 대응되지 않는다. 그래서 원시 점수가 아니라 tanh 압축 이후의 최종
+# 보상([-1,1]) 공간에서 직접 보정한다 -- 압축 함수의 원점 근방 기울기를
+# 근사해서, 그 100-스케일 보정이 압축 이후 공간에서 만드는 효과를 환산한
+# 값을 반올림해서 쓴다. 정확한 재학습/재보정이 아니라 근사이므로, 실제
+# 도움이 되는지는 아레나로 검증한다(260805_lockcorrection.md 참고,
+# 유도 과정 상세는 그 문서에).
 _LOCK_CORRECTED_EVAL_FNS = (evaluate_learned, evaluate_learned_mlp)
 _MY_LOCK_CORRECTION = -0.35
 _OPP_LOCK_CORRECTION = 0.30

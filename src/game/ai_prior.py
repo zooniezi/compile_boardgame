@@ -706,7 +706,7 @@ def _fear_0(g, pi, card, line, hand_after):
     는 항상 `_uncovered_only()`로 감싸여 있어 덮인 카드는 애초에 선택
     불가능하므로, 채점도 `_covered_after_play`로 "이 카드를 내고 나면
     덮여 있을(=대상이 될 수 없을)" 후보를 걸러낸다(260805_aboutshiftprior.md
-    참고 -- Lua `targetsAfterPlay`의 `l ~= line` 배제와 동치)."""
+    참고)."""
     flip = _flip_prior(g, pi, {"n": 1, "may": True})
     shift = _best_shift_where(
         g, pi, lambda c: not _covered_after_play(g, c, pi, line), optional=True)
@@ -2391,4 +2391,89 @@ def choose_option(g, req):
         return best
 
     idx = g.aux_rng(len(cands)) - 1  # aux_rng는 1..n 관례
+    return cands[idx]
+
+
+# ---------------------------------------------------------------------------
+# 손패 잠재력 4분류 (tempo/control/lock/risk) -- ai_features.py의 손패 집계
+# 전용. 자동 추론(이미 있는 TAGS 필드로 판정)과 카드별 수동 오버라이드를
+# 함께 쓴다(수동 오버라이드가 있으면 그쪽 우선). control은 자동 추론
+# 신호가 없어 전량 수동 목록에 의존한다.
+#
+# 아래 tempo/risk 항목 중 일부는 기존 TAGS 필드 조합만으로는 자동 추론이
+# 안 되는 카드라 판정 결과를 직접 옮겨 적었다(원본 효과는 각 카드의
+# fn/기타 필드로 이미 구현돼 있어, 판정 전용 필드를 새로 추가하는 대신
+# 여기 목록으로만 보강): Water_1/Gravity_0/Darkness_3/Life_0/Peace_2/
+# Smoke_0/Smoke_3 -> tempo(뒷면으로 유연하게 낼 수 있는 카드들),
+# Water_0 -> risk(내면 자기 자신이 뒷면으로 뒤집히는 카드).
+_HAND_CLASS_OVERRIDES = {
+    "Water_2": {"control"}, "Spirit_4": {"control"}, "Psychic_2": {"control"},
+    "Chaos_1": {"control"}, "Mirror_2": {"control"}, "Diversity_0": {"control"},
+    "Unity_1": {"control"}, "Fulcrum_3": {"control"}, "Greed_1": {"control"},
+    "Lust_0": {"control", "lock"}, "Lust_4": {"control"}, "Momentum_4": {"control"},
+    "Nova_0": {"control"}, "Nova_2": {"control"}, "Flexible_3": {"control"},
+    "Apathy_2": {"lock"}, "Metal_2": {"lock"}, "Plague_0": {"lock"},
+    "Psychic_1": {"lock"}, "Fear_0": {"lock"}, "Ice_1": {"lock"},
+    "Wrath_0": {"lock"}, "Inert_0": {"lock"}, "Inert_1": {"lock"},
+    "Gravity_6": {"risk"}, "Metal_6": {"risk"}, "Ice_6": {"risk"},
+    "Luck_4": {"risk"}, "Peace_6": {"risk"}, "Time_1": {"risk"},
+    "Assimilation_6": {"risk"}, "Lust_3": {"risk"}, "Lust_6": {"risk"},
+    "Momentum_6": {"risk"}, "Overwhelm_2": {"risk"}, "Pride_6": {"risk"},
+    "Wrath_1": {"risk"}, "Wrath_4": {"risk"}, "Inert_3": {"risk", "tempo"},
+    "Inert_4": {"risk"}, "Rigid_7": {"risk"},
+    "Water_1": {"tempo"}, "Gravity_0": {"tempo"}, "Darkness_3": {"tempo"},
+    "Life_0": {"tempo"}, "Peace_2": {"tempo"}, "Smoke_0": {"tempo"},
+    "Smoke_3": {"tempo"}, "Water_0": {"risk"},
+}
+
+
+# Rigid_7의 뒤집기/이동 봉쇄는 startTop/finishTop/reactiveTop 같은 실제
+# 정의 필드로 구현된 게 아니라 can_flip/can_move 게이트라, 덮여도 부채가
+# 지속된다는 사실이 정의 필드 스캔만으론 안 드러난다 -- 이 카드 하나만
+# 명시적으로 별도 표시해둔다.
+_PERSISTENT_WHEN_COVERED_OVERRIDES = {"Rigid_7"}
+
+
+def persists_when_covered(card):
+    """카드가 덮여도 top 밴드 명령(start/finish/reactive Top)이나 이에
+    준하는 지속 부채/자산이 계속 활성인가."""
+    key = f"{card.proto}_{card.value}"
+    if key in _PERSISTENT_WHEN_COVERED_OVERRIDES:
+        return True
+    d = card.definition or {}
+    return bool(d.get("startTop") or d.get("finishTop") or d.get("reactiveTop"))
+
+
+def ongoing_value(g, card):
+    """카드 한 장의 지속효과 부호값(플러스=이 카드 소유자에게 이득,
+    마이너스=손해). TAGS의 ongoing이 함수/True/숫자 중 무엇이든 처리한다
+    (effect_prior의 _semantic_value와 동일 계약, ai_features.py 전용으로
+    독립시킨 버전)."""
+    tag = TAGS.get(f"{card.proto}_{card.value}", {})
+    value = tag.get("ongoing")
+    if not value:
+        return 0.0
+    if callable(value):
+        pi, line, _ = g.locate(card)
+        return value(g, pi, card, line, len(g.players[pi]["hand"]))
+    if value is True:
+        return 0.8
+    return value if isinstance(value, (int, float)) else 0.0
+
+
+def hand_class(card):
+    """카드 한 장의 손패 잠재력 4분류. 반환값은 {"tempo"/"control"/"lock"/
+    "risk": bool}."""
+    key = f"{card.proto}_{card.value}"
+    tag = TAGS.get(key, {})
+    override = _HAND_CLASS_OVERRIDES.get(key, frozenset())
+    ongoing = tag.get("ongoing")
+    ongoing_is_negative = isinstance(ongoing, (int, float)) and ongoing < 0
+    return {
+        "tempo": "tempo" in override or bool(tag.get("extra_play")) or bool(tag.get("refresh_self")),
+        "control": "control" in override,
+        "lock": "lock" in override or bool(tag.get("block_compile")),
+        "risk": ("risk" in override or bool(tag.get("self_discard")) or bool(tag.get("opp_draw"))
+                 or ongoing_is_negative),
+    }
     return cands[idx]

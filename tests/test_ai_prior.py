@@ -29,7 +29,8 @@ from src.game.ai_prior import (
     _overwhelm_6_ongoing, _pride_2_ongoing, _pride_6_ongoing, _sloth_0_ongoing,
     _wrath_1_ongoing, _flexible_2_ongoing, _flexible_4_ongoing,
     _inert_0_ongoing, _inert_1_ongoing, _rigid_1_ongoing, _rigid_2_ongoing,
-    _speed_3_prior, _is_uncovered, _covered_after_play,
+    _speed_3_prior, _is_uncovered, _covered_after_play, hand_class,
+    ongoing_value, persists_when_covered,
 )
 from src.game.rules import COMPILE_THRESHOLD
 
@@ -53,6 +54,97 @@ def _card(g, proto, value, owner, face_up=True):
     c = g.new_card(proto, value, owner)
     c.face_up = face_up
     return c
+
+
+# ---------------------------------------------------------------------------
+# hand_class() -- 손패 잠재력 4분류(tempo/control/lock/risk). 자동 추론과
+# 카드별 수동 오버라이드를 함께 대표 카드로 확인한다.
+# ---------------------------------------------------------------------------
+
+def test_hand_class_control_is_manual_override_only(engine):
+    """control은 자동 추론 신호가 없어 오버라이드 목록에 없는 카드는
+    항상 False여야 한다(수동 태그 전용)."""
+    e = engine
+    assert hand_class(_card(e, "Water", 2, 1))["control"] is True  # 오버라이드 목록
+    assert hand_class(_card(e, "Water", 3, 1))["control"] is False  # 목록에 없음
+
+
+def test_hand_class_lock_auto_infers_block_compile(engine):
+    """lock은 block_compile 태그로 자동 추론되거나(Metal_1) 수동
+    오버라이드로도 켜진다(Inert_0)."""
+    e = engine
+    assert hand_class(_card(e, "Metal", 1, 1))["lock"] is True  # 자동 추론(block_compile)
+    assert hand_class(_card(e, "Inert", 0, 1))["lock"] is True  # 수동 오버라이드
+    assert hand_class(_card(e, "Water", 3, 1))["lock"] is False
+
+
+def test_hand_class_risk_auto_infers_negative_ongoing(engine):
+    """risk는 self_discard/opp_draw 자동 추론에 더해, ongoing이 음수
+    (Rigid_7=-2.5)인 경우도 자동으로 잡아야 한다."""
+    e = engine
+    assert hand_class(_card(e, "Rigid", 7, 1))["risk"] is True  # ongoing<0 자동 추론
+    assert hand_class(_card(e, "Water", 3, 1))["risk"] is False
+
+
+def test_hand_class_tempo_auto_infers_extra_play(engine):
+    e = engine
+    assert hand_class(_card(e, "Speed", 0, 1))["tempo"] is True  # extra_play 자동 추론
+    assert hand_class(_card(e, "Inert", 3, 1))["tempo"] is True  # 수동 오버라이드
+    assert hand_class(_card(e, "Water", 3, 1))["tempo"] is False
+
+
+def test_hand_class_covers_fd_and_self_flip_down_cards():
+    """Python TAGS엔 "뒷면으로 유연하게 낼 수 있음"이나 "내면 자기
+    자신이 뒷면으로 뒤집힘"을 표시하는 전용 필드가 없어서 자동 추론이
+    안 되는 카드들 -- 오버라이드 목록으로 직접 보강했다. 회귀 방지."""
+    e = Engine(protocols1=["Water", "Life", "Smoke"], protocols2=["Ice", "Metal", "Death"])
+    assert hand_class(_card(e, "Water", 1, 1))["tempo"] is True  # 뒷면 유연 플레이
+    assert hand_class(_card(e, "Life", 0, 1))["tempo"] is True  # 뒷면 유연 플레이
+    assert hand_class(_card(e, "Smoke", 0, 1))["tempo"] is True  # 뒷면 유연 플레이
+    assert hand_class(_card(e, "Water", 0, 1))["risk"] is True  # 자기 자신이 뒷면으로 뒤집힘
+
+
+# ---------------------------------------------------------------------------
+# ongoing_value() / persists_when_covered() -- 지속효과의 부호값(이득/손해)과,
+# 덮여도 그 효과가 계속 활성인지 판정하는 함수.
+# ---------------------------------------------------------------------------
+
+def test_ongoing_value_returns_signed_numeric_tag(engine):
+    e = engine
+    rigid7 = _card(e, "Rigid", 7, 1)
+    e.players[1]["stacks"][1].append(rigid7)
+    assert ongoing_value(e, rigid7) == -2.5  # 손해(TAGS["Rigid_7"]["ongoing"]=-2.5)
+
+    metal0 = _card(e, "Metal", 0, 1)
+    e.players[1]["stacks"][2].append(metal0)
+    assert ongoing_value(e, metal0) == 1.5  # 이득
+
+
+def test_ongoing_value_zero_for_untagged_card(engine):
+    e = engine
+    water3 = _card(e, "Water", 3, 1)
+    e.players[1]["stacks"][1].append(water3)
+    assert ongoing_value(e, water3) == 0.0
+
+
+def test_persists_when_covered_true_for_rigid_7_override(engine):
+    """Rigid_7은 startTop/finishTop/reactiveTop 정의가 없지만(뒤집기/이동
+    봉쇄가 can_flip/can_move 게이트로 구현됨), 덮여도 지속되는 부채라
+    수동 오버라이드로 True여야 한다."""
+    e = engine
+    assert persists_when_covered(_card(e, "Rigid", 7, 1)) is True
+
+
+def test_persists_when_covered_true_for_reactive_top_definition(engine):
+    """실제 reactiveTop 정의 필드가 있는 카드(Plague_1)는 자동으로 True
+    (_card()가 new_card를 통해 실제 DEFS 정의를 그대로 붙여준다)."""
+    e = engine
+    assert persists_when_covered(_card(e, "Plague", 1, 1)) is True
+
+
+def test_persists_when_covered_false_for_vanilla_card(engine):
+    e = engine
+    assert persists_when_covered(_card(e, "Water", 3, 1)) is False
 
 
 def test_hate_0_values_removal_higher_when_enemy_line_is_threatening():
