@@ -597,7 +597,7 @@ async function handleState(state, mySeq) {
     // 이미 자기가 뭘 했는지 아니까 빠르게 지나가도 되지만, AI 턴은 그 사이에
     // 무슨 일이 일어났는지 로그/보드를 읽을 시간이 따로 필요하다.
     const turnPlayer = state.players[String(state.turn)];
-    const aiTurnPace = turnPlayer && turnPlayer.isAI ? 2.3 : 1;
+    const aiTurnPace = turnPlayer && turnPlayer.isAI ? 1.5 : 1;
     // 손패 공개는 흘러가버리면 놓치므로, 모달로 띄우고 닫을 때까지 진행을 멈춘다.
     if (ev.kind === "revealHand") {
       const cards = ((ev.i18n || {}).params || {}).cards || [];
